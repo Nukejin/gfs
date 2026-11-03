@@ -71,9 +71,12 @@ def resolve_price(
         return price, at, "指定価格"
     if day is not None:
         quote = ctx.source.on_date(inst, day)
-        note = f"{quote.as_of} の終値"
-        if quote.as_of != day:
-            note += f"。{day} は休場のため直前の営業日"
+        if quote.as_of == ctx.now.date():
+            note = f"当日 {quote.as_of} の最新値"  # 取引時間中なら確定した終値ではない
+        elif quote.as_of != day:
+            note = f"{day} は取引がないため、直前の営業日 {quote.as_of} の終値"
+        else:
+            note = f"{quote.as_of} の終値"
         return quote.price, quote.as_of.isoformat(), note
     quote = ctx.source.latest(inst)
     return quote.price, ctx.now.strftime("%Y-%m-%d %H:%M"), f"{quote.as_of} 時点の最新値"

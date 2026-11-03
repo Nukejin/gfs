@@ -11,7 +11,7 @@
 
 ## セットアップ
 
-Python 3.9 以上が必要です。
+Python 3.10 以上が必要です（yfinance が使うライブラリの要件）。
 
 ```bash
 pip install -r requirements.txt
@@ -47,7 +47,7 @@ python -m trade_sim summary
 
 ### 過去の価格でシミュレーションする
 
-`--date` を付けると、その日の終値で約定します。休場日を指定した場合は、直前の営業日の終値を使います。
+`--date` を付けると、その日の終値で約定します。休場日を指定した場合は直前の営業日の終値、当日を指定した場合はその時点の最新値を使います。
 
 ```bash
 python -m trade_sim long lasertec 100 --date 2025-04-01

@@ -66,9 +66,18 @@ class CliTest(unittest.TestCase):
     def test_historical_trade_on_holiday_uses_previous_close(self):
         code, out, _ = self.run_cli("long", "6920", "100", "--date", "2026-11-01")
         self.assertEqual(code, 0, out)
-        self.assertIn("@ 19,500.0円 (2026-10-30 の終値。2026-11-01 は休場のため直前の営業日)", out)
+        self.assertIn("@ 19,500.0円 (2026-11-01 は取引がないため、直前の営業日 2026-10-30 の終値)", out)
         position = Portfolio.load(self.path).positions[0]
         self.assertEqual((position.entry_price, position.opened_at), (19500.0, "2026-10-30"))
+
+    def test_historical_trade_on_trading_day(self):
+        _, out, _ = self.run_cli("long", "lasertec", "100", "--date", "2026-10-29")
+        self.assertIn("@ 19,000.0円 (2026-10-29 の終値)", out)
+
+    def test_date_of_today_is_labeled_as_latest(self):
+        self.source.history["USDJPY"] = {NOW.date(): 151.5}
+        _, out, _ = self.run_cli("short", "usdjpy", "10000", "--date", "2026-11-03")
+        self.assertIn("@ 151.500円 (当日 2026-11-03 の最新値)", out)
 
     def test_close_before_open_date_is_rejected(self):
         self.run_cli("long", "lasertec", "100", "--date", "2026-10-30")
