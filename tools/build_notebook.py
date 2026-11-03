@@ -36,8 +36,8 @@ yfinance（Yahoo Finance）の価格を使って、**キオクシア・レーザ
 
 SETUP = '''\
 #@title ① セットアップ（最初に実行してください） { display-mode: "form" }
-#@markdown 取引データを Google ドライブに保存すると、次に開いたときも続きから使えます。
-ドライブに保存する = True  #@param {type:"boolean"}
+#@markdown **save_to_drive**: チェックを入れておくと取引データを Google ドライブに保存し、次に開いたときも続きから使えます。
+save_to_drive = True  #@param {type:"boolean"}
 
 import importlib.metadata
 import re
@@ -73,7 +73,7 @@ for _module in [m for m in sys.modules if m == "trade_sim" or m.startswith("trad
 
 # 取引データの保存先
 DATA_FILE = str(Path.cwd() / "portfolio.json")
-if ドライブに保存する:
+if save_to_drive:
     try:
         from google.colab import drive
     except ImportError:  # Colab 以外 (手元の Jupyter など) ではカレントディレクトリに保存する
@@ -97,15 +97,15 @@ _app = show(DATA_FILE)
 
 RESET = '''\
 #@title （必要なときだけ）取引データをすべて削除 { display-mode: "form" }
-#@markdown 建玉と取引履歴をすべて消して、最初からやり直します。チェックを入れてから実行してください。
-削除する = False  #@param {type:"boolean"}
+#@markdown 建玉と取引履歴をすべて消して、最初からやり直します。**delete_all** にチェックを入れてから、このセルを実行してください。
+delete_all = False  #@param {type:"boolean"}
 
 from trade_sim.simulator import Simulator
 
-if 削除する:
+if delete_all:
     print(*Simulator(DATA_FILE).reset().lines)
 else:
-    print("削除するときは「削除する」にチェックを入れてから、このセルを実行してください。")
+    print("削除するときは delete_all にチェックを入れてから、このセルを実行してください。")
 '''
 
 
