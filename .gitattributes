@@ -1,0 +1,2 @@
+# Windows のバッチファイルは改行 (CRLF) と文字コード (Shift_JIS) をそのまま保つ
+*.bat -text

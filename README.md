@@ -28,7 +28,14 @@ pip install -r requirements-app.txt
 streamlit run app.py
 ```
 
-Windows では `start_app.bat` をダブルクリックしても起動できます（初回は必要なライブラリを自動でインストールします）。ブラウザで `http://localhost:8501` が開きます。
+#### Windows の場合
+
+1. Python が入っていなければ、[python.org](https://www.python.org/downloads/) からインストールします。インストーラーの最初の画面で「Add python.exe to PATH」にチェックを入れてから「Install Now」を押してください。
+   - Windows に最初からある「python」コマンドは Microsoft Store へのショートカットで、Python 本体ではありません。
+2. GitHub からダウンロードした ZIP は、右クリック →「すべて展開」で展開します。
+3. 展開したフォルダの `start_app.bat` をダブルクリックします。初回は必要なライブラリを自動でインストールし、ブラウザで `http://localhost:8501` が開きます。
+
+Python が見つからないときは、`start_app.bat` がその場で winget を使ったインストールを提案します。終わるときは黒い画面（コマンドプロンプト）を閉じてください。
 
 取引データはコマンドライン版と同じ `portfolio.json` に保存されるので、どちらからでも続きを操作できます。
 
