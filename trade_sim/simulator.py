@@ -10,8 +10,24 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from .instruments import INSTRUMENTS, Instrument, UnknownInstrumentError, find_instrument, get_instrument
-from .portfolio import SIDE_LABELS, Portfolio, PortfolioError, SummaryRow
+from .instruments import (
+    INSTRUMENTS,
+    Instrument,
+    UnknownInstrumentError,
+    find_instrument,
+    format_leverage,
+    get_instrument,
+)
+from .portfolio import (
+    LOSSCUT,
+    SIDE_LABELS,
+    AccountStatus,
+    Portfolio,
+    PortfolioError,
+    SummaryRow,
+    Trade,
+    required_margin,
+)
 from .prices import PriceError, PriceSource, YFinanceSource
 
 # 日本に夏時間はないので、固定の +9 時間で日本時間になる
@@ -50,6 +66,16 @@ def fmt_yen(value: float | None) -> str:
         return "-"
     rounded = round(value)
     return "0円" if rounded == 0 else f"{rounded:+,}円"
+
+
+def fmt_amount(value: float | None) -> str:
+    """符号を付けない金額 (資金・証拠金など)。"""
+    return "-" if value is None else f"{round(value):,}円"
+
+
+def fmt_level(level: float | None) -> str:
+    """証拠金維持率。建玉が無ければ "-"。"""
+    return "-" if level is None else f"{level:,.1f}%"
 
 
 def fmt_rate(rate: float | None) -> str:
@@ -125,20 +151,51 @@ class Simulator:
         return Result(table=table, notes=notes, ok=len(notes) < len(instruments))
 
     def open(
-        self, symbol: str, side: str, qty: int, price: float | None = None, day: date | None = None
+        self,
+        symbol: str,
+        side: str,
+        qty: int,
+        price: float | None = None,
+        day: date | None = None,
+        leverage: float = 1.0,
     ) -> Result:
-        """新規にロング (side="long") またはショート (side="short") で建てる。"""
+        """新規にロング (side="long") またはショート (side="short") で建てる。
+
+        必要証拠金 (取引金額 ÷ レバレッジ) が余力を超える注文はできない。
+        """
         inst = find_instrument(symbol)
         if side not in SIDE_LABELS:
             raise InputError(f"売買区分が不正です: {side}")
+        if isinstance(leverage, bool) or not isinstance(leverage, (int, float)) or not 1 <= leverage <= inst.max_leverage:
+            raise InputError(
+                f"{inst.name}のレバレッジは 1 倍から {format_leverage(inst.max_leverage)}までで指定してください: {leverage}"
+            )
+        if isinstance(qty, bool) or not isinstance(qty, int) or qty <= 0:
+            raise InputError(f"数量は 1 以上の整数で指定してください: {qty}")
+        losscut = self.check_losscut()
+        if losscut is not None:
+            losscut.notes.append("ロスカットが発生したため、この注文は出していません。")
+            losscut.ok = False
+            return losscut
+
         price, at, note = self._resolve_price(inst, price, day)
         portfolio = self.load()
-        position = portfolio.open(inst.key, side, qty, price, at)
+        status = self._status(portfolio)
+        margin = required_margin(price, qty, leverage)
+        if status.free_margin is None:
+            raise InputError("現在値を取得できない建玉があるため、余力を計算できません。少し待ってからもう一度試してください。")
+        if margin > status.free_margin:
+            raise InputError(
+                f"余力が足りません。この注文の必要証拠金は {fmt_amount(margin)}、余力は {fmt_amount(status.free_margin)}"
+                " です。数量を減らすか、レバレッジを上げてください。"
+            )
+        position = portfolio.open(inst.key, side, qty, price, at, leverage)
         portfolio.save(self.path)
         return Result(
             lines=[
                 f"新規{SIDE_LABELS[side]}: #{position.id} {inst.name} {inst.format_qty(position.qty)}"
                 f" @ {inst.format_price(price)}円 ({note})"
+                f"  レバレッジ {format_leverage(position.leverage)}・必要証拠金 {fmt_amount(position.required_margin)}"
             ]
         )
 
@@ -150,6 +207,10 @@ class Simulator:
         day: date | None = None,
     ) -> Result:
         """建玉を決済する。ids に "all" を渡すとすべての建玉。qty を指定すると一部だけ決済する。"""
+        losscut = self.check_losscut()
+        if losscut is not None:
+            losscut.notes.append("ロスカットで、保有中の建玉はすべて決済済みです。")
+            return losscut
         portfolio = self.load()
         if [str(i).lower() for i in ids] == ["all"]:
             targets = [p.id for p in portfolio.positions]
@@ -173,19 +234,17 @@ class Simulator:
         lines = []
         for position_id, inst, exit_price, at, note in orders:
             trade = portfolio.close(position_id, exit_price, at, qty)
-            lines.append(
-                f"決済: #{trade.position_id} {inst.name} {SIDE_LABELS[trade.side]} {inst.format_qty(trade.qty)}"
-                f"  建値 {inst.format_price(trade.entry_price)} → 決済値 {inst.format_price(trade.exit_price)}"
-                f" ({note})  損益 {fmt_yen(trade.pnl)}"
-            )
+            lines.append(_close_line(inst, trade, note))
         portfolio.save(self.path)
         lines.append(f"実現損益の通算: {fmt_yen(portfolio.realized_pnl)}")
         return Result(lines=lines)
 
     def positions(self) -> Result:
+        losscut = self.check_losscut()
+        losscut_lines = losscut.lines if losscut else []
         portfolio = self.load()
         if not portfolio.positions:
-            return Result(lines=["保有中の建玉はありません。"])
+            return Result(lines=[*losscut_lines, "保有中の建玉はありません。"])
         prices, notes = self.latest_prices({p.symbol for p in portfolio.positions})
         rows = []
         total = 0.0
@@ -204,17 +263,20 @@ class Simulator:
                     inst.name,
                     SIDE_LABELS[position.side],
                     inst.format_qty(position.qty),
+                    format_leverage(position.leverage),
                     inst.format_price(position.entry_price),
                     current,
                     pnl_text,
+                    fmt_amount(position.required_margin),
                     position.opened_at,
                 ]
             )
-        headers = ["建玉", "銘柄", "売買", "数量", "建値", "現在値", "評価損益", "約定日時"]
+        headers = ["建玉", "銘柄", "売買", "数量", "レバレッジ", "建値", "現在値", "評価損益", "必要証拠金", "約定日時"]
         suffix = " (現在値を取得できなかった建玉を除く)" if notes else ""
+        used = sum(p.required_margin for p in portfolio.positions)
         return Result(
-            table=Table(headers, rows, "<<<>>>><"),
-            lines=[f"評価損益の合計: {fmt_yen(total)}{suffix}"],
+            table=Table(headers, rows, "<<<>>>>>><"),
+            lines=[*losscut_lines, f"評価損益の合計: {fmt_yen(total)}{suffix}　必要証拠金の合計: {fmt_amount(used)}"],
             notes=notes,
         )
 
@@ -234,16 +296,18 @@ class Simulator:
                     inst.name,
                     SIDE_LABELS[trade.side],
                     inst.format_qty(trade.qty),
+                    format_leverage(trade.leverage),
                     inst.format_price(trade.entry_price),
                     inst.format_price(trade.exit_price),
                     fmt_yen(trade.pnl),
                     trade.opened_at,
                     trade.closed_at,
+                    "ロスカット" if trade.reason == LOSSCUT else "",
                 ]
             )
-        headers = ["建玉", "銘柄", "売買", "数量", "建値", "決済値", "損益", "約定日時", "決済日時"]
+        headers = ["建玉", "銘柄", "売買", "数量", "レバレッジ", "建値", "決済値", "損益", "約定日時", "決済日時", "備考"]
         return Result(
-            table=Table(headers, rows, "<<<>>>><<"),
+            table=Table(headers, rows, "<<<>>>>><<<"),
             lines=[f"実現損益の合計: {fmt_yen(sum(t.pnl for t in trades))} ({len(trades)} 件)"],
         )
 
@@ -254,8 +318,10 @@ class Simulator:
         return portfolio.summary(prices), errors
 
     def summary(self) -> Result:
-        """銘柄別と通算の損益。通算損益 = 実現損益 + 評価損益。"""
+        """銘柄別と通算の損益。通算損益 = 実現損益 + 評価損益。口座の状態 (証拠金) も表示する。"""
+        losscut = self.check_losscut()
         rows, errors = self.summary_rows()
+        status, _ = self.account_status()
 
         table_rows = [
             [
@@ -292,9 +358,64 @@ class Simulator:
             notes = ["現在値を取得できなかった銘柄の評価損益は、通算損益に含まれていません。", *errors]
         return Result(
             table=Table(headers, table_rows, "<>>>>>>", footer),
-            lines=[f"通算損益: {fmt_yen(total)}  (実現損益 {fmt_yen(realized)} + 評価損益 {fmt_yen(unrealized)})"],
+            lines=[
+                *(losscut.lines if losscut else []),
+                f"通算損益: {fmt_yen(total)}  (実現損益 {fmt_yen(realized)} + 評価損益 {fmt_yen(unrealized)})",
+                *_account_lines(status),
+            ],
             notes=notes,
         )
+
+    # ---- 口座 ------------------------------------------------------------
+
+    def account_status(self) -> tuple[AccountStatus, list[str]]:
+        """口座の状態 (資金・有効証拠金・余力・証拠金維持率) と、現在値を取得できなかった銘柄のエラー。"""
+        portfolio = self.load()
+        prices, errors = self.latest_prices({p.symbol for p in portfolio.positions})
+        return portfolio.status(prices), errors
+
+    def account(self) -> Result:
+        losscut = self.check_losscut()
+        status, errors = self.account_status()
+        return Result(lines=[*(losscut.lines if losscut else []), *_account_lines(status)], notes=errors)
+
+    def set_account(self, initial_capital: float | None = None, losscut_level: float | None = None) -> Result:
+        """初期資金とロスカット水準 (%、0 ならロスカットしない) を変える。"""
+        portfolio = self.load()
+        portfolio.set_account(initial_capital, losscut_level)
+        portfolio.save(self.path)
+        lines = []
+        if initial_capital is not None:
+            lines.append(f"初期資金を {fmt_amount(portfolio.initial_capital)} にしました。")
+        if losscut_level is not None:
+            lines.append(f"ロスカット水準を {fmt_losscut(portfolio.losscut_level)} にしました。")
+        return Result(lines=lines)
+
+    def check_losscut(self) -> Result | None:
+        """証拠金維持率がロスカット水準を下回っていたら、すべての建玉を今の価格で決済する。
+
+        価格を確認したとき (注文・決済・表示のたび) に判定する。アプリを閉じている間は判定しないので、
+        次に開いたときの価格で決済される。
+        """
+        portfolio = self.load()
+        if not portfolio.positions or portfolio.losscut_level <= 0:
+            return None
+        prices, _ = self.latest_prices({p.symbol for p in portfolio.positions})
+        status = portfolio.status(prices)
+        if not status.losscut_triggered:
+            return None
+        at = self.clock().strftime("%Y-%m-%d %H:%M")
+        lines = [
+            f"ロスカット: 証拠金維持率が {fmt_level(status.margin_level)} になり、ロスカット水準 "
+            f"{fmt_losscut(status.losscut_level)} を下回ったため、すべての建玉を決済しました。"
+        ]
+        for position in list(portfolio.positions):
+            inst = get_instrument(position.symbol)
+            trade = portfolio.close(position.id, prices[position.symbol], at, reason=LOSSCUT)
+            lines.append(_close_line(inst, trade, "ロスカット"))
+        portfolio.save(self.path)
+        lines.append(f"実現損益の通算: {fmt_yen(portfolio.realized_pnl)}")
+        return Result(lines=lines)
 
     def reset(self) -> Result:
         """建玉と取引履歴をすべて削除する。"""
@@ -327,6 +448,10 @@ class Simulator:
         quote = self.source.latest(inst)
         return quote.price, now.strftime("%Y-%m-%d %H:%M"), f"{quote.as_of} 時点の最新値"
 
+    def _status(self, portfolio: Portfolio) -> AccountStatus:
+        prices, _ = self.latest_prices({p.symbol for p in portfolio.positions})
+        return portfolio.status(prices)
+
     def latest_prices(self, symbols: set[str]) -> tuple[dict[str, float | None], list[str]]:
         """保有銘柄の現在値をまとめて取得する。取得できなかった銘柄は None。"""
         prices: dict[str, float | None] = {}
@@ -340,6 +465,27 @@ class Simulator:
                 prices[inst.key] = None
                 errors.append(str(e))
         return prices, errors
+
+
+def _close_line(inst: Instrument, trade: Trade, note: str) -> str:
+    return (
+        f"決済: #{trade.position_id} {inst.name} {SIDE_LABELS[trade.side]} {inst.format_qty(trade.qty)}"
+        f"  建値 {inst.format_price(trade.entry_price)} → 決済値 {inst.format_price(trade.exit_price)}"
+        f" ({note})  損益 {fmt_yen(trade.pnl)}"
+    )
+
+
+def fmt_losscut(level: float) -> str:
+    return "なし (ロスカットしない)" if level <= 0 else f"{level:g}%"
+
+
+def _account_lines(status: AccountStatus) -> list[str]:
+    return [
+        f"有効証拠金: {fmt_amount(status.equity)}  (資金 {fmt_amount(status.cash)} + 評価損益 {fmt_yen(status.unrealized)})"
+        f"　初期資金: {fmt_amount(status.initial_capital)}",
+        f"必要証拠金: {fmt_amount(status.used_margin)}　余力: {fmt_amount(status.free_margin)}"
+        f"　証拠金維持率: {fmt_level(status.margin_level)}　ロスカット水準: {fmt_losscut(status.losscut_level)}",
+    ]
 
 
 def _parse_position_id(value: int | str) -> int:

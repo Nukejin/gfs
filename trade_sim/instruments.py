@@ -10,6 +10,19 @@ import unicodedata
 from dataclasses import dataclass
 
 
+# レバレッジの上限 (日本の個人向けの規制に合わせる: 信用取引は保証金率 30% で約 3.3 倍、FX は 25 倍)
+MAX_LEVERAGE = {"stock": 3.3, "fx": 25.0}
+# 画面で選べるレバレッジ
+LEVERAGE_CHOICES = {
+    "stock": (1.0, 1.5, 2.0, 2.5, 3.0, 3.3),
+    "fx": (1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0, 25.0),
+}
+
+
+def format_leverage(leverage: float) -> str:
+    return f"{leverage:g}倍"
+
+
 @dataclass(frozen=True)
 class Instrument:
     key: str  # 内部 ID (保存データにはこの値が入る)
@@ -25,6 +38,10 @@ class Instrument:
 
     def format_qty(self, qty: int) -> str:
         return f"{qty:,}{self.unit}"
+
+    @property
+    def max_leverage(self) -> float:
+        return MAX_LEVERAGE[self.kind]
 
 
 INSTRUMENTS: tuple[Instrument, ...] = (

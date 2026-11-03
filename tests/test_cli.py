@@ -154,6 +154,32 @@ class CliTest(unittest.TestCase):
         self.assertIn("20,000.0", out)
         self.assertIn("※ ユーロ円", out)
 
+    def test_leverage_and_account(self):
+        code, out, _ = self.run_cli("short", "usdjpy", "100000", "--leverage", "25")
+        self.assertEqual(code, 0)
+        self.assertIn("レバレッジ 25倍・必要証拠金 600,000円", out)
+
+        _, out, _ = self.run_cli("account")
+        self.assertIn("必要証拠金: 600,000円", out)
+        self.assertIn("余力: 9,400,000円", out)
+
+        code, out, _ = self.run_cli("account", "--capital", "2000000", "--losscut", "30")
+        self.assertEqual(code, 0)
+        self.assertIn("初期資金を 2,000,000円 にしました。", out)
+        self.assertIn("ロスカット水準: 30%", out)
+
+        _, out, _ = self.run_cli("positions")
+        self.assertIn("25倍", out)
+        self.assertIn("600,000円", out)
+
+    def test_leverage_errors(self):
+        code, _, err = self.run_cli("long", "kioxia", "100", "-l", "5")
+        self.assertEqual(code, 1)
+        self.assertIn("3.3倍まで", err)
+        code, _, err = self.run_cli("long", "lasertec", "10000")
+        self.assertEqual(code, 1)
+        self.assertIn("余力が足りません", err)
+
     def test_reset(self):
         self.run_cli("long", "kioxia", "100")
         code, out, _ = self.run_cli("reset", "--yes")

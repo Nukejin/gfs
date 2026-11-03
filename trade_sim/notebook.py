@@ -14,7 +14,7 @@ from collections.abc import Callable
 import ipywidgets as widgets
 from IPython.display import display
 
-from .instruments import INSTRUMENTS, get_instrument
+from .instruments import INSTRUMENTS, LEVERAGE_CHOICES, Instrument, format_leverage, get_instrument
 from .portfolio import LONG, SHORT, SIDE_LABELS
 from .prices import PriceSource
 from .simulator import USER_ERRORS, Result, Simulator, Table, parse_date
@@ -84,6 +84,10 @@ def _heading(text: str) -> widgets.HTML:
     return widgets.HTML(f'<div style="{style}">{html.escape(text)}</div>')
 
 
+def _leverage_options(inst: Instrument) -> list[tuple[str, float]]:
+    return [(format_leverage(x), x) for x in LEVERAGE_CHOICES[inst.kind]]
+
+
 def _row(*children: widgets.Widget) -> widgets.HBox:
     return widgets.HBox(list(children), layout=widgets.Layout(flex_flow="row wrap", align_items="center"))
 
@@ -94,7 +98,7 @@ def _row(*children: widgets.Widget) -> widgets.HBox:
 class TradeApp:
     def __init__(self, simulator: Simulator) -> None:
         self.sim = simulator
-        label = {"description_width": "4.5em"}
+        label = {"description_width": "5.5em"}
         first = INSTRUMENTS[0]
 
         # 現在値
@@ -113,6 +117,11 @@ class TradeApp:
             value=DEFAULT_QTY[first.kind], description="数量", style=label, layout=widgets.Layout(width="15em")
         )
         self.unit = widgets.HTML(first.unit)
+        self.leverage = widgets.Dropdown(
+            options=_leverage_options(first), value=1.0, description="レバレッジ", style=label,
+            layout=widgets.Layout(width="15em"),
+        )
+        self.leverage_hint = widgets.HTML(f"{format_leverage(first.max_leverage)}まで")
         self.order_date = widgets.Text(
             placeholder="空欄なら最新の価格（例: 2025-04-01）",
             description="約定日",
@@ -160,6 +169,7 @@ class TradeApp:
                 self.symbol,
                 self.side,
                 _row(self.qty, self.unit),
+                _row(self.leverage, self.leverage_hint),
                 self.order_date,
                 self.order_button,
                 self.order_message,
@@ -200,6 +210,9 @@ class TradeApp:
         inst = get_instrument(change["new"])
         self.qty.value = DEFAULT_QTY[inst.kind]
         self.unit.value = inst.unit
+        self.leverage.options = _leverage_options(inst)
+        self.leverage.value = 1.0
+        self.leverage_hint.value = f"{format_leverage(inst.max_leverage)}まで"
 
     def _on_refresh(self, _button: widgets.Button) -> None:
         self._cancel_close_all()
@@ -213,7 +226,10 @@ class TradeApp:
     def _on_order(self, _button: widgets.Button) -> None:
         self._cancel_close_all()
         symbol, side, qty, day_text = self.symbol.value, self.side.value, self.qty.value, self.order_date.value
-        self._run(self.order_message, lambda: self.sim.open(symbol, side, qty, day=parse_date(day_text)))
+        leverage = float(self.leverage.value)
+        self._run(
+            self.order_message, lambda: self.sim.open(symbol, side, qty, day=parse_date(day_text), leverage=leverage)
+        )
 
     def _on_close(self, _button: widgets.Button) -> None:
         self._cancel_close_all()

@@ -38,7 +38,7 @@ def cmd_quote(args: argparse.Namespace, sim: Simulator) -> Result:
 
 
 def cmd_open(args: argparse.Namespace, sim: Simulator) -> Result:
-    return sim.open(args.symbol, args.side, args.qty, price=args.price, day=args.date)
+    return sim.open(args.symbol, args.side, args.qty, price=args.price, day=args.date, leverage=args.leverage)
 
 
 def cmd_close(args: argparse.Namespace, sim: Simulator) -> Result:
@@ -55,6 +55,14 @@ def cmd_history(args: argparse.Namespace, sim: Simulator) -> Result:
 
 def cmd_summary(args: argparse.Namespace, sim: Simulator) -> Result:
     return sim.summary()
+
+
+def cmd_account(args: argparse.Namespace, sim: Simulator) -> Result:
+    if args.capital is None and args.losscut is None:
+        return sim.account()
+    changed = sim.set_account(initial_capital=args.capital, losscut_level=args.losscut)
+    status = sim.account()
+    return Result(lines=[*changed.lines, *status.lines], notes=status.notes)
 
 
 def cmd_reset(args: argparse.Namespace, sim: Simulator) -> Result:
@@ -78,6 +86,16 @@ def _positive_int(text: str) -> int:
         raise argparse.ArgumentTypeError(f"整数で指定してください: {text}") from None
     if value <= 0:
         raise argparse.ArgumentTypeError(f"1 以上を指定してください: {text}")
+    return value
+
+
+def _non_negative_float(text: str) -> float:
+    try:
+        value = float(text.replace(",", "").rstrip("%"))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"数値で指定してください: {text}") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"0 以上を指定してください: {text}")
     return value
 
 
@@ -121,11 +139,12 @@ def _epilog() -> str:
         "例:",
         "  python -m trade_sim quote                       現在値を表示",
         "  python -m trade_sim long kioxia 100             キオクシアを 100 株ロング",
-        "  python -m trade_sim short usdjpy 10000          ドル円を 1 万通貨ショート",
+        "  python -m trade_sim short usdjpy 10000 -l 10    ドル円を 1 万通貨、レバレッジ 10 倍でショート",
         "  python -m trade_sim long 6920 100 --date 2025-04-01   過去の終値で約定",
         "  python -m trade_sim positions                   保有中の建玉と評価損益",
         "  python -m trade_sim close 1                     建玉 #1 を決済",
         "  python -m trade_sim summary                     通算損益を表示",
+        "  python -m trade_sim account                     資金・証拠金・余力・証拠金維持率を表示",
     ]
     return "\n".join(lines)
 
@@ -154,6 +173,14 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(side, help=text, description=text)
         p.add_argument("symbol", metavar="SYMBOL", help="銘柄 (例: kioxia、6920、ドル円、eurjpy)")
         p.add_argument("qty", type=_positive_int, metavar="QTY", help="数量。株数または通貨数 (例: 100、10000)")
+        p.add_argument(
+            "-l",
+            "--leverage",
+            type=_positive_float,
+            default=1.0,
+            metavar="X",
+            help="レバレッジ (株は 3.3 倍、為替は 25 倍まで。既定: 1 倍)",
+        )
         _add_price_options(p)
         p.set_defaults(func=cmd_open, side=side)
 
@@ -172,6 +199,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("summary", aliases=["pnl"], help="銘柄別と通算の損益を表示する")
     p.set_defaults(func=cmd_summary)
+
+    p = sub.add_parser(
+        "account",
+        help="資金・証拠金・余力・証拠金維持率を表示する (初期資金やロスカット水準の変更も)",
+        description="口座の状態を表示します。オプションを付けると設定を変えます。",
+    )
+    p.add_argument("--capital", type=_positive_float, metavar="YEN", help="初期資金を変える (例: 10000000)")
+    p.add_argument(
+        "--losscut",
+        type=_non_negative_float,
+        metavar="PERCENT",
+        help="ロスカット水準 (証拠金維持率 %%) を変える。0 ならロスカットしない (既定: 50)",
+    )
+    p.set_defaults(func=cmd_account)
 
     p = sub.add_parser("reset", help="建玉と取引履歴をすべて削除する")
     p.add_argument("-y", "--yes", action="store_true", help="確認せずに削除する")

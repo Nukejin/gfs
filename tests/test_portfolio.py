@@ -106,6 +106,72 @@ class PortfolioTest(unittest.TestCase):
         self.assertEqual(rows["EURJPY"].total, 0)
 
 
+class LeverageAndAccountTest(unittest.TestCase):
+    def test_required_margin(self):
+        pf = Portfolio()
+        stock = pf.open("KIOXIA", LONG, 300, 3000.0, "2026-11-02", leverage=3)
+        fx = pf.open("USDJPY", SHORT, 100000, 150.0, "2026-11-02", leverage=25)
+        self.assertEqual(stock.required_margin, 300000)  # 900,000 / 3
+        self.assertEqual(fx.required_margin, 600000)  # 15,000,000 / 25
+
+    def test_leverage_limits(self):
+        pf = Portfolio()
+        pf.open("LASERTEC", LONG, 100, 20000.0, "2026-11-02", leverage=3.3)
+        pf.open("EURJPY", LONG, 10000, 160.0, "2026-11-02", leverage=25)
+        for symbol, leverage in (("KIOXIA", 5), ("USDJPY", 30), ("USDJPY", 0.5), ("KIOXIA", True)):
+            with self.subTest(symbol=symbol, leverage=leverage), self.assertRaises(PortfolioError):
+                pf.open(symbol, LONG, 100, 1000.0, "2026-11-02", leverage=leverage)
+
+    def test_status(self):
+        pf = Portfolio(initial_capital=1_000_000)
+        pf.open("KIOXIA", LONG, 100, 3000.0, "2026-11-01", leverage=1)
+        pf.close(1, 3500.0, "2026-11-02")  # 実現損益 +50,000
+        pf.open("USDJPY", LONG, 100000, 150.0, "2026-11-02", leverage=25)  # 必要証拠金 600,000
+
+        status = pf.status({"USDJPY": 149.0})  # 評価損益 -100,000
+        self.assertEqual(status.cash, 1_050_000)
+        self.assertEqual(status.equity, 950_000)
+        self.assertEqual(status.used_margin, 600_000)
+        self.assertEqual(status.free_margin, 350_000)
+        self.assertAlmostEqual(status.margin_level, 158.333, places=3)
+        self.assertFalse(status.losscut_triggered)
+
+        status = pf.status({"USDJPY": 145.0})  # 評価損益 -500,000 → 維持率 91.7%
+        pf.set_account(losscut_level=100)
+        self.assertTrue(pf.status({"USDJPY": 145.0}).losscut_triggered)
+        self.assertFalse(status.losscut_triggered)
+
+    def test_status_without_price(self):
+        pf = Portfolio()
+        pf.open("KIOXIA", LONG, 100, 3000.0, "2026-11-02")
+        status = pf.status({})
+        self.assertIsNone(status.equity)
+        self.assertIsNone(status.free_margin)
+        self.assertIsNone(status.margin_level)
+        self.assertFalse(status.losscut_triggered)
+
+    def test_no_positions(self):
+        status = Portfolio().status({})
+        self.assertEqual((status.equity, status.free_margin, status.margin_level), (10_000_000, 10_000_000, None))
+
+    def test_losscut_disabled(self):
+        pf = Portfolio(losscut_level=0)
+        pf.open("USDJPY", LONG, 100000, 150.0, "2026-11-02", leverage=25)
+        self.assertFalse(pf.status({"USDJPY": 50.0}).losscut_triggered)
+
+    def test_invalid_account_settings(self):
+        pf = Portfolio()
+        for kwargs in ({"initial_capital": 0}, {"losscut_level": -1}, {"losscut_level": 150}):
+            with self.subTest(**kwargs), self.assertRaises(PortfolioError):
+                pf.set_account(**kwargs)
+
+    def test_close_records_leverage_and_reason(self):
+        pf = Portfolio()
+        pf.open("KIOXIA", SHORT, 100, 3000.0, "2026-11-02", leverage=2)
+        trade = pf.close(1, 2900.0, "2026-11-03", reason="losscut")
+        self.assertEqual((trade.leverage, trade.reason, trade.pnl), (2.0, "losscut", 10000))
+
+
 class PersistenceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -129,8 +195,46 @@ class PersistenceTest(unittest.TestCase):
         self.assertEqual(loaded.positions, pf.positions)
         self.assertEqual(loaded.trades, pf.trades)
         self.assertEqual(loaded.next_id, 3)
-        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["version"], 1)
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(data["version"], 2)
+        self.assertEqual(data["account"], {"initial_capital": 10_000_000, "losscut_level": 50.0})
         self.assertFalse(self.path.with_name("portfolio.json.tmp").exists())
+
+    def test_version1_file_is_loaded_with_defaults(self):
+        # レバレッジと口座の設定が無い、最初の版のデータ
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "next_id": 3,
+                    "positions": [
+                        {"id": 2, "symbol": "KIOXIA", "side": "long", "qty": 100, "entry_price": 3000.0,
+                         "opened_at": "2026-11-02"}
+                    ],
+                    "trades": [
+                        {"position_id": 1, "symbol": "USDJPY", "side": "short", "qty": 10000, "entry_price": 150.0,
+                         "exit_price": 149.0, "opened_at": "2026-10-01", "closed_at": "2026-10-02"}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        pf = Portfolio.load(self.path)
+        self.assertEqual(pf.positions[0].leverage, 1.0)
+        self.assertEqual((pf.trades[0].leverage, pf.trades[0].reason), (1.0, ""))
+        # 読み込んだとたんにロスカットされないよう、ロスカットはオフで始める
+        self.assertEqual((pf.initial_capital, pf.losscut_level), (10_000_000, 0.0))
+
+    def test_account_settings_round_trip(self):
+        pf = Portfolio()
+        pf.set_account(initial_capital=3_000_000, losscut_level=0)
+        pf.save(self.path)
+        loaded = Portfolio.load(self.path)
+        self.assertEqual((loaded.initial_capital, loaded.losscut_level), (3_000_000, 0))
+
+    def test_new_file_has_default_losscut(self):
+        self.assertEqual(Portfolio.load(self.path).losscut_level, 50.0)
 
     def test_corrupt_file_raises(self):
         self.path.parent.mkdir(parents=True)

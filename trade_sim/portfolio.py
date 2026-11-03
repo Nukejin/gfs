@@ -1,8 +1,15 @@
-"""建玉と決済履歴の管理、損益の計算。
+"""建玉と決済履歴の管理、損益と証拠金の計算。
 
 損益はすべて円で計算する (対象銘柄はすべて円建てのため)。
   ロング:   (決済値 - 建値) × 数量
   ショート: (建値 - 決済値) × 数量
+
+レバレッジは、建てるのに必要な証拠金を決める (損益そのものは変わらない)。
+  必要証拠金     = 建値 × 数量 ÷ レバレッジ
+  資金           = 初期資金 + 実現損益
+  有効証拠金     = 資金 + 評価損益
+  余力           = 有効証拠金 - 必要証拠金
+  証拠金維持率   = 有効証拠金 ÷ 必要証拠金 × 100 (%)
 """
 
 from __future__ import annotations
@@ -12,12 +19,16 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .instruments import INSTRUMENTS, get_instrument
+from .instruments import INSTRUMENTS, format_leverage, get_instrument
 
 LONG = "long"
 SHORT = "short"
 SIDE_LABELS = {LONG: "ロング", SHORT: "ショート"}
-DATA_VERSION = 1
+DATA_VERSION = 2
+
+DEFAULT_CAPITAL = 10_000_000  # 初期資金 (円)
+DEFAULT_LOSSCUT_LEVEL = 50.0  # 証拠金維持率 (%) がこれを下回ったらロスカット。0 ならロスカットしない
+LOSSCUT = "losscut"  # Trade.reason: ロスカットによる決済
 
 
 class PortfolioError(Exception):
@@ -40,9 +51,14 @@ class Position:
     qty: int
     entry_price: float
     opened_at: str  # "YYYY-MM-DD HH:MM" (現在値で約定) または "YYYY-MM-DD" (終値で約定)
+    leverage: float = 1.0
 
     def unrealized_pnl(self, price: float) -> float:
         return calc_pnl(self.side, self.entry_price, price, self.qty)
+
+    @property
+    def required_margin(self) -> float:
+        return required_margin(self.entry_price, self.qty, self.leverage)
 
 
 @dataclass
@@ -57,6 +73,8 @@ class Trade:
     exit_price: float
     opened_at: str
     closed_at: str
+    leverage: float = 1.0
+    reason: str = ""  # "losscut" ならロスカットによる決済
 
     @property
     def pnl(self) -> float:
@@ -83,6 +101,56 @@ class SummaryRow:
         return None if self.unrealized is None else round(self.realized + self.unrealized, 2)
 
 
+@dataclass
+class AccountStatus:
+    """口座の状態。"""
+
+    initial_capital: float
+    realized: float
+    unrealized: float | None  # 現在値を取得できない建玉があれば None
+    used_margin: float  # 必要証拠金の合計
+    losscut_level: float
+
+    @property
+    def cash(self) -> float:
+        """資金 (初期資金 + 実現損益)。"""
+        return round(self.initial_capital + self.realized, 2)
+
+    @property
+    def equity(self) -> float | None:
+        """有効証拠金 (資金 + 評価損益)。"""
+        return None if self.unrealized is None else round(self.cash + self.unrealized, 2)
+
+    @property
+    def free_margin(self) -> float | None:
+        """余力 (新しく建てるのに使える証拠金)。"""
+        return None if self.equity is None else round(self.equity - self.used_margin, 2)
+
+    @property
+    def margin_level(self) -> float | None:
+        """証拠金維持率 (%)。建玉が無ければ None。"""
+        if self.equity is None or self.used_margin <= 0:
+            return None
+        return self.equity / self.used_margin * 100
+
+    @property
+    def losscut_triggered(self) -> bool:
+        level = self.margin_level
+        return self.losscut_level > 0 and level is not None and level < self.losscut_level
+
+
+def required_margin(price: float, qty: int, leverage: float) -> float:
+    return round(price * qty / leverage, 2)
+
+
+def _check_leverage(leverage: object, symbol: str) -> None:
+    inst = get_instrument(symbol)
+    if isinstance(leverage, bool) or not isinstance(leverage, (int, float)) or not 1 <= leverage <= inst.max_leverage:
+        raise PortfolioError(
+            f"{inst.name}のレバレッジは 1 倍から {format_leverage(inst.max_leverage)}までで指定してください: {leverage}"
+        )
+
+
 def _check_qty(qty: object) -> None:
     if isinstance(qty, bool) or not isinstance(qty, int) or qty <= 0:
         raise PortfolioError(f"数量は 1 以上の整数で指定してください: {qty}")
@@ -99,10 +167,14 @@ class Portfolio:
         positions: list[Position] | None = None,
         trades: list[Trade] | None = None,
         next_id: int = 1,
+        initial_capital: float = DEFAULT_CAPITAL,
+        losscut_level: float = DEFAULT_LOSSCUT_LEVEL,
     ) -> None:
         self.positions = positions if positions is not None else []
         self.trades = trades if trades is not None else []
         self.next_id = next_id
+        self.initial_capital = initial_capital
+        self.losscut_level = losscut_level
 
     # ---- 保存・読み込み ------------------------------------------------
 
@@ -116,9 +188,16 @@ class Portfolio:
             positions = [Position(**p) for p in data.get("positions", [])]
             trades = [Trade(**t) for t in data.get("trades", [])]
             next_id = int(data.get("next_id", 1))
-        except (OSError, ValueError, TypeError, AttributeError) as e:
+            if "account" in data:
+                initial_capital = float(data["account"]["initial_capital"])
+                losscut_level = float(data["account"]["losscut_level"])
+            else:
+                # レバレッジ導入前 (バージョン 1) のデータ。資金を考えずに建てた建玉があり得るので、
+                # 読み込んだとたんにロスカットされないよう、ロスカットはオフで始める
+                initial_capital, losscut_level = DEFAULT_CAPITAL, 0.0
+        except (OSError, ValueError, TypeError, AttributeError, KeyError) as e:
             raise PortfolioError(f"データファイル {path} を読み込めません: {e}") from e
-        return cls(positions, trades, next_id)
+        return cls(positions, trades, next_id, initial_capital, losscut_level)
 
     def save(self, path: str | os.PathLike) -> None:
         path = Path(path)
@@ -126,6 +205,7 @@ class Portfolio:
         data = {
             "version": DATA_VERSION,
             "next_id": self.next_id,
+            "account": {"initial_capital": self.initial_capital, "losscut_level": self.losscut_level},
             "positions": [asdict(p) for p in self.positions],
             "trades": [asdict(t) for t in self.trades],
         }
@@ -136,14 +216,15 @@ class Portfolio:
 
     # ---- 取引 ----------------------------------------------------------
 
-    def open(self, symbol: str, side: str, qty: int, price: float, at: str) -> Position:
-        """新規に建玉を作る。"""
+    def open(self, symbol: str, side: str, qty: int, price: float, at: str, leverage: float = 1.0) -> Position:
+        """新規に建玉を作る (証拠金の余力は呼び出し側で確認する)。"""
         get_instrument(symbol)
         if side not in SIDE_LABELS:
             raise PortfolioError(f"売買区分が不正です: {side}")
         _check_qty(qty)
         _check_price(price)
-        position = Position(self.next_id, symbol, side, qty, price, at)
+        _check_leverage(leverage, symbol)
+        position = Position(self.next_id, symbol, side, qty, price, at, float(leverage))
         self.next_id += 1
         self.positions.append(position)
         return position
@@ -154,7 +235,7 @@ class Portfolio:
                 return position
         raise PortfolioError(f"建玉 #{position_id} は見つかりません (保有中の建玉は positions で確認できます)。")
 
-    def close(self, position_id: int, price: float, at: str, qty: int | None = None) -> Trade:
+    def close(self, position_id: int, price: float, at: str, qty: int | None = None, reason: str = "") -> Trade:
         """建玉を決済する。qty を指定すると一部だけ決済する。"""
         position = self.find(position_id)
         qty = position.qty if qty is None else qty
@@ -176,6 +257,8 @@ class Portfolio:
             price,
             position.opened_at,
             at,
+            position.leverage,
+            reason,
         )
         self.trades.append(trade)
         position.qty -= qty
@@ -188,6 +271,33 @@ class Portfolio:
     @property
     def realized_pnl(self) -> float:
         return round(sum(t.pnl for t in self.trades), 2)
+
+    def set_account(self, initial_capital: float | None = None, losscut_level: float | None = None) -> None:
+        if initial_capital is not None:
+            if not initial_capital > 0:
+                raise PortfolioError(f"初期資金は 0 より大きい金額にしてください: {initial_capital}")
+            self.initial_capital = float(initial_capital)
+        if losscut_level is not None:
+            if not 0 <= losscut_level <= 100:
+                raise PortfolioError(f"ロスカット水準は 0〜100% で指定してください (0 ならロスカットしない): {losscut_level}")
+            self.losscut_level = float(losscut_level)
+
+    def status(self, prices: dict[str, float | None]) -> AccountStatus:
+        """口座の状態。prices は銘柄 ID -> 現在値 (保有中の銘柄の分)。"""
+        unrealized: float | None = 0.0
+        for position in self.positions:
+            price = prices.get(position.symbol)
+            if price is None:
+                unrealized = None
+                break
+            unrealized += position.unrealized_pnl(price)
+        return AccountStatus(
+            initial_capital=self.initial_capital,
+            realized=self.realized_pnl,
+            unrealized=None if unrealized is None else round(unrealized, 2),
+            used_margin=round(sum(p.required_margin for p in self.positions), 2),
+            losscut_level=self.losscut_level,
+        )
 
     def summary(self, prices: dict[str, float | None]) -> list[SummaryRow]:
         """銘柄ごとの損益。prices は銘柄 ID -> 現在値 (保有中の銘柄の分だけあればよい)。"""
