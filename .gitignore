@@ -1,0 +1,8 @@
+# シミュレーターのデータファイル (個人の取引記録)
+portfolio.json
+*.json.tmp
+
+__pycache__/
+*.pyc
+.venv/
+venv/
