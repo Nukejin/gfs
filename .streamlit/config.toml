@@ -1,0 +1,15 @@
+[browser]
+# Streamlit への利用状況の送信をしない
+gatherUsageStats = false
+
+[client]
+# 右上の「Deploy」などの開発者向けメニューを出さない
+toolbarMode = "minimal"
+
+# ボタンなどの色。損益の赤 (プラス)・青 (マイナス) と紛れない色にする。
+# [theme] に直接書くとパソコンのダークモードに追従しなくなるので、ライト・ダークそれぞれに書く。
+[theme.light]
+primaryColor = "#0d7f8a"
+
+[theme.dark]
+primaryColor = "#3fb8c4"

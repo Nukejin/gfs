@@ -6,9 +6,12 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from .instruments import Instrument
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 # 指定日が休場日だったときに、直前の営業日を探してさかのぼる日数
 LOOKBACK_DAYS = 14
@@ -19,6 +22,54 @@ LATEST_CACHE_SECONDS = 60
 
 class PriceError(Exception):
     """価格を取得できなかった。"""
+
+
+# yfinance の period を短い順に並べたもの
+PERIOD_ORDER = ("1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "max")
+
+
+@dataclass(frozen=True)
+class Timeframe:
+    """チャートの足の種類。"""
+
+    key: str
+    label: str
+    interval: str  # yfinance の interval
+    periods: tuple[tuple[str, str], ...]  # (表示名, yfinance の period)
+    default_period: str
+    ma_windows: tuple[int, ...]  # 移動平均線の本数
+    intraday: bool
+    max_fetch: str  # 取得できる最長の period (Yahoo の制限: 5分足・15分足は 60 日、1時間足は 730 日まで)
+
+    def fetch_period(self, period: str) -> str:
+        """移動平均線をチャートの左端から描けるよう、表示する期間より 1 段階長く取得する。"""
+        longer = PERIOD_ORDER[min(PERIOD_ORDER.index(period) + 1, len(PERIOD_ORDER) - 1)]
+        return longer if PERIOD_ORDER.index(longer) <= PERIOD_ORDER.index(self.max_fetch) else period
+
+
+TIMEFRAMES: tuple[Timeframe, ...] = (
+    Timeframe("5m", "5分足", "5m", (("1日", "1d"), ("5日", "5d"), ("1か月", "1mo")), "5d", (5, 25, 75), True, "1mo"),
+    Timeframe("15m", "15分足", "15m", (("5日", "5d"), ("1か月", "1mo")), "1mo", (5, 25, 75), True, "1mo"),
+    Timeframe(
+        "1h", "1時間足", "1h", (("1か月", "1mo"), ("3か月", "3mo"), ("6か月", "6mo"), ("1年", "1y")), "3mo",
+        (5, 25, 75), True, "2y",
+    ),
+    Timeframe(
+        "1d", "日足", "1d", (("3か月", "3mo"), ("6か月", "6mo"), ("1年", "1y"), ("2年", "2y"), ("5年", "5y")), "6mo",
+        (5, 25, 75), False, "max",
+    ),
+    Timeframe(
+        "1wk", "週足", "1wk", (("1年", "1y"), ("2年", "2y"), ("5年", "5y"), ("10年", "10y"), ("全期間", "max")), "2y",
+        (13, 26, 52), False, "max",
+    ),
+)
+
+
+def get_timeframe(key: str) -> Timeframe:
+    for timeframe in TIMEFRAMES:
+        if timeframe.key == key:
+            return timeframe
+    raise ValueError(f"未対応の足です: {key}")
 
 
 @dataclass(frozen=True)
@@ -46,9 +97,11 @@ class YFinanceSource:
     def __init__(self, cache_seconds: float = LATEST_CACHE_SECONDS) -> None:
         self.cache_seconds = cache_seconds
         self._latest_cache: dict[str, tuple[float, Quote]] = {}
+        self._candle_cache: dict[tuple[str, str, str], tuple[float, pd.DataFrame]] = {}
 
     def clear_cache(self) -> None:
         self._latest_cache.clear()
+        self._candle_cache.clear()
 
     def latest(self, inst: Instrument) -> Quote:
         cached = self._latest_cache.get(inst.key)
@@ -78,7 +131,45 @@ class YFinanceSource:
         found_day, price = closes[-1]
         return Quote(price, found_day)
 
+    def candles(self, inst: Instrument, timeframe: Timeframe, period: str) -> pd.DataFrame:
+        """ローソク足 (Open/High/Low/Close/Volume)。
+
+        移動平均線を計算できるよう、period より長めに取得する (表示する範囲は charts.visible_start で決める)。
+        時刻はすべて日本時間 (タイムゾーン情報なし) にそろえる。日足・週足は日付 (0 時) にする。
+        """
+        fetch = timeframe.fetch_period(period)
+        key = (inst.key, timeframe.key, fetch)
+        cached = self._candle_cache.get(key)
+        if cached is not None and time.monotonic() - cached[0] < self.cache_seconds:
+            return cached[1]
+
+        import pandas as pd
+
+        df = self._history(inst, interval=timeframe.interval, period=fetch)
+        columns = ["Open", "High", "Low", "Close", "Volume"]
+        if df is None or df.empty or not set(columns) <= set(df.columns):
+            raise PriceError(f"{inst.name}({inst.ticker}) の{timeframe.label}のデータがありません。期間を変えてみてください。")
+        df = df[columns].dropna(subset=["Open", "High", "Low", "Close"]).copy()
+        if timeframe.intraday:
+            df.index = df.index.tz_convert("Asia/Tokyo").tz_localize(None)
+        else:
+            # 為替の日足はロンドン時間の 0 時なので、日本時間に直さずにその日付を使う
+            df.index = pd.DatetimeIndex([pd.Timestamp(ts.date()) for ts in df.index])
+        df = df[~df.index.duplicated(keep="last")]
+        df["Volume"] = df["Volume"].fillna(0)
+        if df.empty:
+            raise PriceError(f"{inst.name}({inst.ticker}) の{timeframe.label}のデータがありません。期間を変えてみてください。")
+        self._candle_cache[key] = (time.monotonic(), df)
+        return df
+
     def _daily_closes(self, inst: Instrument, **kwargs) -> list[tuple[date, float]]:
+        df = self._history(inst, interval="1d", **kwargs)
+        if df is None or df.empty or "Close" not in df.columns:
+            return []
+        closes = df["Close"].dropna()
+        return [(ts.date(), round(float(value), inst.price_decimals)) for ts, value in closes.items()]
+
+    def _history(self, inst: Instrument, **kwargs) -> pd.DataFrame | None:
         try:
             import yfinance as yf
         except ImportError as e:
@@ -89,12 +180,7 @@ class YFinanceSource:
         # データが無いときの yfinance 自身のログは、こちらのエラーメッセージで代わりに伝える
         logging.getLogger("yfinance").setLevel(logging.CRITICAL)
         try:
-            # auto_adjust=False: 配当で調整されていない、実際の終値を使う
-            df = yf.Ticker(inst.ticker).history(interval="1d", auto_adjust=False, actions=False, **kwargs)
+            # auto_adjust=False: 配当で調整されていない、実際の価格を使う
+            return yf.Ticker(inst.ticker).history(auto_adjust=False, actions=False, **kwargs)
         except Exception as e:  # 通信エラーやレート制限など、yfinance は色々な例外を投げる
             raise PriceError(f"{inst.name}({inst.ticker}) の価格取得に失敗しました: {e}") from e
-
-        if df is None or df.empty or "Close" not in df.columns:
-            return []
-        closes = df["Close"].dropna()
-        return [(ts.date(), round(float(value), inst.price_decimals)) for ts, value in closes.items()]

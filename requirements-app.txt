@@ -1,0 +1,4 @@
+# ブラウザ版 (streamlit run app.py) に必要なもの
+-r requirements.txt
+streamlit>=1.66
+plotly>=7.0

@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from .instruments import INSTRUMENTS, Instrument, UnknownInstrumentError, find_instrument, get_instrument
-from .portfolio import SIDE_LABELS, Portfolio, PortfolioError
+from .portfolio import SIDE_LABELS, Portfolio, PortfolioError, SummaryRow
 from .prices import PriceError, PriceSource, YFinanceSource
 
 # 日本に夏時間はないので、固定の +9 時間で日本時間になる
@@ -186,7 +186,7 @@ class Simulator:
         portfolio = self.load()
         if not portfolio.positions:
             return Result(lines=["保有中の建玉はありません。"])
-        prices, notes = self._latest_prices({p.symbol for p in portfolio.positions})
+        prices, notes = self.latest_prices({p.symbol for p in portfolio.positions})
         rows = []
         total = 0.0
         for position in portfolio.positions:
@@ -247,11 +247,15 @@ class Simulator:
             lines=[f"実現損益の合計: {fmt_yen(sum(t.pnl for t in trades))} ({len(trades)} 件)"],
         )
 
+    def summary_rows(self) -> tuple[list[SummaryRow], list[str]]:
+        """銘柄別の損益 (数値) と、現在値を取得できなかった銘柄のエラー。"""
+        portfolio = self.load()
+        prices, errors = self.latest_prices({p.symbol for p in portfolio.positions})
+        return portfolio.summary(prices), errors
+
     def summary(self) -> Result:
         """銘柄別と通算の損益。通算損益 = 実現損益 + 評価損益。"""
-        portfolio = self.load()
-        prices, errors = self._latest_prices({p.symbol for p in portfolio.positions})
-        rows = portfolio.summary(prices)
+        rows, errors = self.summary_rows()
 
         table_rows = [
             [
@@ -323,7 +327,7 @@ class Simulator:
         quote = self.source.latest(inst)
         return quote.price, now.strftime("%Y-%m-%d %H:%M"), f"{quote.as_of} 時点の最新値"
 
-    def _latest_prices(self, symbols: set[str]) -> tuple[dict[str, float | None], list[str]]:
+    def latest_prices(self, symbols: set[str]) -> tuple[dict[str, float | None], list[str]]:
         """保有銘柄の現在値をまとめて取得する。取得できなかった銘柄は None。"""
         prices: dict[str, float | None] = {}
         errors = []

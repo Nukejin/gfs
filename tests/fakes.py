@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from trade_sim.instruments import Instrument
-from trade_sim.prices import PriceError, Quote
+from trade_sim.prices import PriceError, Quote, Timeframe
 
 
 class FakeSource:
@@ -25,3 +25,26 @@ class FakeSource:
             raise PriceError(f"{day} 以前に {inst.name} の価格データがありません (テスト)")
         found = max(days)
         return Quote(self.history[inst.key][found], found)
+
+    def candles(self, inst: Instrument, timeframe: Timeframe, period: str):
+        """latest の価格で終わる 40 本のローソク足 (テスト用の決まった値)。"""
+        import pandas as pd
+
+        if inst.key not in self.latest_prices:
+            raise PriceError(f"{inst.name} の{timeframe.label}のデータがありません (テスト)")
+        last = self.latest_prices[inst.key]
+        step = timedelta(minutes=5) if timeframe.intraday else timedelta(days=1)
+        end = datetime(2026, 11, 2, 15, 0) if timeframe.intraday else datetime(2026, 11, 2)
+        index = pd.DatetimeIndex([end - step * i for i in range(39, -1, -1)])
+        closes = [last * (1 + 0.01 * ((i % 7) - 3) / 3) for i in range(39)] + [last]
+        opens = [closes[0]] + closes[:-1]
+        return pd.DataFrame(
+            {
+                "Open": opens,
+                "High": [max(o, c) * 1.002 for o, c in zip(opens, closes)],
+                "Low": [min(o, c) * 0.998 for o, c in zip(opens, closes)],
+                "Close": closes,
+                "Volume": [1000 * (i + 1) if inst.kind == "stock" else 0 for i in range(40)],
+            },
+            index=index,
+        )
