@@ -63,6 +63,20 @@ class YFinanceSourceTest(unittest.TestCase):
         source.latest(inst)
         self.assertEqual(len(self.calls), 1)
 
+    def test_latest_is_fetched_again_after_cache_expires_or_is_cleared(self):
+        self.frame = _frame([("2026-10-30", 150.0)], tz="Europe/London")
+        inst = find_instrument("usdjpy")
+        source = YFinanceSource(cache_seconds=0)
+        source.latest(inst)
+        source.latest(inst)
+        self.assertEqual(len(self.calls), 2)
+
+        source = YFinanceSource()
+        source.latest(inst)
+        source.clear_cache()
+        source.latest(inst)
+        self.assertEqual(len(self.calls), 4)
+
     def test_on_date_falls_back_to_previous_trading_day(self):
         self.frame = _frame([("2026-10-29", 19000.0), ("2026-10-30", 19500.0)])
         quote = YFinanceSource().on_date(find_instrument("lasertec"), date(2026, 11, 1))  # 日曜日

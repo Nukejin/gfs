@@ -9,7 +9,19 @@
 | ドル円 | `usdjpy` / `USD/JPY` / `ドル円` | USDJPY=X | 通貨 |
 | ユーロ円 | `eurjpy` / `EUR/JPY` / `ユーロ円` | EURJPY=X | 通貨 |
 
-## セットアップ
+## ブラウザで使う（Google Colab）
+
+インストールなしで、ブラウザ上の Google Colab で動かせます。ボタンやプルダウンで注文・決済ができる画面が出ます。
+
+1. [`colab/trade_sim.ipynb`](colab/trade_sim.ipynb) を Google ドライブに置いて、Google Colaboratory で開きます（Colab のメニュー「ファイル → ノートブックをアップロード」でも開けます）。
+2. メニューの「ランタイム → すべてのセルを実行」を選びます。
+3. Google ドライブへのアクセスを許可すると、取引データがドライブの `trade_sim/portfolio.json` に保存され、次回も続きから使えます。
+
+ノートブックにはシミュレーター本体のコードが埋め込まれているので、ノートブック 1 つだけで動きます。
+
+## コマンドラインで使う
+
+### セットアップ
 
 Python 3.10 以上が必要です（yfinance が使うライブラリの要件）。
 
@@ -17,7 +29,7 @@ Python 3.10 以上が必要です（yfinance が使うライブラリの要件�
 pip install -r requirements.txt
 ```
 
-## 使い方
+### 使い方
 
 ```bash
 # 現在値と前日比を表示
@@ -56,6 +68,11 @@ python -m trade_sim close 1 --date 2025-06-30
 
 `--price` で約定価格を直接指定することもできます（例: `--price 152.5`）。
 
+### データの保存先
+
+建玉と取引履歴は、カレントディレクトリの `portfolio.json` に保存されます。保存先は `--file` オプション（例: `python -m trade_sim --file my.json summary`）か、環境変数 `TRADE_SIM_FILE` で変更できます。
+`python -m trade_sim reset` で全データを削除できます。
+
 ## 損益の計算方法
 
 対象はすべて円建てなので、損益も円で計算します。
@@ -65,21 +82,18 @@ python -m trade_sim close 1 --date 2025-06-30
 
 例えば、ドル円を 10,000 通貨ショートして 1 円下がると +10,000 円です。
 
-## データの保存先
-
-建玉と取引履歴は、カレントディレクトリの `portfolio.json` に保存されます。保存先は `--file` オプション（例: `python -m trade_sim --file my.json summary`）か、環境変数 `TRADE_SIM_FILE` で変更できます。
-`python -m trade_sim reset` で全データを削除できます。
-
 ## 注意事項
 
+- 取引の時刻は日本時間で記録します。
 - 価格は Yahoo Finance の日足データです。取引時間中は当日の途中経過（東証銘柄はおよそ 20 分遅れ）、時間外は直近の終値になります。
 - yfinance は Yahoo Finance の非公式ライブラリなので、仕様変更やアクセス制限で一時的に取得できなくなることがあります。そのときは `pip install -U yfinance` で更新してみてください。
 - 手数料、スプレッド、FX のスワップポイント、信用取引の金利・貸株料、証拠金・ロスカットは計算に含めていません。
 
-## テスト
+## 開発
 
 ```bash
-python -m unittest
+python -m unittest                   # テスト (実際の価格は取得せず、テスト用の価格データを使います)
+python tools/build_notebook.py       # trade_sim を変更したら、Colab 用ノートブックを作り直す
 ```
 
-テストでは実際の価格を取得せず、テスト用の価格データを使います。
+Colab 用の画面のテストには `pip install ipywidgets` が必要です（入っていなければ省略されます）。

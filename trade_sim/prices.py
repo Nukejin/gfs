@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Protocol
@@ -11,6 +12,9 @@ from .instruments import Instrument
 
 # 指定日が休場日だったときに、直前の営業日を探してさかのぼる日数
 LOOKBACK_DAYS = 14
+
+# 最新の価格を使い回す秒数 (Colab のように開きっぱなしで使う場合も、これより古い価格は取得し直す)
+LATEST_CACHE_SECONDS = 60
 
 
 class PriceError(Exception):
@@ -39,18 +43,25 @@ class YFinanceSource:
     東証銘柄は Yahoo Finance 側でおよそ 20 分遅れのデータになる。
     """
 
-    def __init__(self) -> None:
-        self._latest_cache: dict[str, Quote] = {}
+    def __init__(self, cache_seconds: float = LATEST_CACHE_SECONDS) -> None:
+        self.cache_seconds = cache_seconds
+        self._latest_cache: dict[str, tuple[float, Quote]] = {}
+
+    def clear_cache(self) -> None:
+        self._latest_cache.clear()
 
     def latest(self, inst: Instrument) -> Quote:
-        if inst.key not in self._latest_cache:
-            closes = self._daily_closes(inst, period="1mo")
-            if not closes:
-                raise PriceError(f"{inst.name}({inst.ticker}) の価格データを取得できませんでした。")
-            day, price = closes[-1]
-            prev_close = closes[-2][1] if len(closes) >= 2 else None
-            self._latest_cache[inst.key] = Quote(price, day, prev_close)
-        return self._latest_cache[inst.key]
+        cached = self._latest_cache.get(inst.key)
+        if cached is not None and time.monotonic() - cached[0] < self.cache_seconds:
+            return cached[1]
+        closes = self._daily_closes(inst, period="1mo")
+        if not closes:
+            raise PriceError(f"{inst.name}({inst.ticker}) の価格データを取得できませんでした。")
+        day, price = closes[-1]
+        prev_close = closes[-2][1] if len(closes) >= 2 else None
+        quote = Quote(price, day, prev_close)
+        self._latest_cache[inst.key] = (time.monotonic(), quote)
+        return quote
 
     def on_date(self, inst: Instrument, day: date) -> Quote:
         start = day - timedelta(days=LOOKBACK_DAYS)

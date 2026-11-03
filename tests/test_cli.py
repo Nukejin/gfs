@@ -145,7 +145,7 @@ class CliTest(unittest.TestCase):
         self.run_cli("long", "kioxia", "100")
         code, _, err = self.run_cli("close", "1", "2", "--qty", "50")
         self.assertEqual(code, 1)
-        self.assertIn("--qty", err)
+        self.assertIn("一部決済", err)
 
     def test_quote(self):
         del self.source.latest_prices["EURJPY"]
