@@ -10,13 +10,17 @@
   有効証拠金     = 資金 + 評価損益
   余力           = 有効証拠金 - 必要証拠金
   証拠金維持率   = 有効証拠金 ÷ 必要証拠金 × 100 (%)
+
+建玉には決済注文 (利益確定の価格・損切りの価格) を付けられる。値動きがその価格に届いたら決済する (find_exit)。
 """
 
 from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .instruments import INSTRUMENTS, format_leverage, get_instrument
@@ -28,11 +32,22 @@ DATA_VERSION = 2
 
 DEFAULT_CAPITAL = 10_000_000  # 初期資金 (円)
 DEFAULT_LOSSCUT_LEVEL = 50.0  # 証拠金維持率 (%) がこれを下回ったらロスカット。0 ならロスカットしない
-LOSSCUT = "losscut"  # Trade.reason: ロスカットによる決済
+# Trade.reason: 決済の理由 (手動の決済は "")
+LOSSCUT = "losscut"
+TAKE_PROFIT = "take_profit"
+STOP_LOSS = "stop_loss"
+REASON_LABELS = {LOSSCUT: "ロスカット", TAKE_PROFIT: "利確", STOP_LOSS: "損切り"}
 
 
 class PortfolioError(Exception):
     pass
+
+
+def parse_trade_time(text: str) -> datetime:
+    """記録された日時を datetime にする。日付だけのもの (終値で約定) はその日の取引終了後として扱う。"""
+    if len(text) <= 10:
+        return datetime.fromisoformat(text) + timedelta(hours=23, minutes=59)
+    return datetime.fromisoformat(text)
 
 
 def calc_pnl(side: str, entry_price: float, exit_price: float, qty: int) -> float:
@@ -52,9 +67,16 @@ class Position:
     entry_price: float
     opened_at: str  # "YYYY-MM-DD HH:MM" (現在値で約定) または "YYYY-MM-DD" (終値で約定)
     leverage: float = 1.0
+    take_profit: float | None = None  # 利益確定の価格
+    stop_loss: float | None = None  # 損切りの価格
+    exit_set_at: str | None = None  # 決済注文を出した (変えた) 日時。これより後の値動きで判定する
 
     def unrealized_pnl(self, price: float) -> float:
         return calc_pnl(self.side, self.entry_price, price, self.qty)
+
+    def exit_pnl(self, price: float | None) -> float | None:
+        """決済注文の価格で決済した場合の損益。"""
+        return None if price is None else self.unrealized_pnl(price)
 
     @property
     def required_margin(self) -> float:
@@ -74,7 +96,7 @@ class Trade:
     opened_at: str
     closed_at: str
     leverage: float = 1.0
-    reason: str = ""  # "losscut" ならロスカットによる決済
+    reason: str = ""  # 決済の理由 (REASON_LABELS)。手動の決済は ""
 
     @property
     def pnl(self) -> float:
@@ -139,6 +161,63 @@ class AccountStatus:
         return self.losscut_level > 0 and level is not None and level < self.losscut_level
 
 
+def find_exit(
+    position: Position,
+    candles: Iterable[tuple[datetime, float, float, float]],
+    latest: float | None = None,
+    now: datetime | None = None,
+) -> tuple[datetime, float, str] | None:
+    """決済注文が約定する最初の時点を探す。戻り値は (時刻, 約定価格, TAKE_PROFIT か STOP_LOSS)。
+
+    candles は決済注文を出した後のローソク足 (時刻, 始値, 高値, 安値) を時刻順に並べたもの。
+    - 始値の時点で注文の価格を飛び越えていたら (窓開け)、始値で約定する
+    - 同じ足の中で利益確定と損切りの両方の価格に届いたら、不利な方 (損切り) が先とみなす
+    - ローソク足が無い時間の分は latest (現在値) でも確かめる。届いていれば注文の価格で約定する
+    """
+    tp, sl = position.take_profit, position.stop_loss
+    if tp is None and sl is None:
+        return None
+    long = position.side == LONG
+
+    def beyond_sl(price: float) -> bool:
+        return sl is not None and (price <= sl if long else price >= sl)
+
+    def beyond_tp(price: float) -> bool:
+        return tp is not None and (price >= tp if long else price <= tp)
+
+    for when, open_, high, low in candles:
+        if beyond_sl(open_):
+            return when, open_, STOP_LOSS
+        if beyond_tp(open_):
+            return when, open_, TAKE_PROFIT
+        if beyond_sl(low if long else high):
+            return when, sl, STOP_LOSS
+        if beyond_tp(high if long else low):
+            return when, tp, TAKE_PROFIT
+    if latest is not None and now is not None:
+        if beyond_sl(latest):
+            return now, sl, STOP_LOSS
+        if beyond_tp(latest):
+            return now, tp, TAKE_PROFIT
+    return None
+
+
+def exit_prices(
+    position: Position, take_profit_yen: float | None, stop_loss_yen: float | None
+) -> tuple[float | None, float | None]:
+    """利益確定・損切りの金額 (円) を、その金額になる価格に直す。None か 0 なら注文なし。"""
+    sign = 1 if position.side == LONG else -1
+    tp = sl = None
+    if take_profit_yen:
+        tp = position.entry_price + sign * take_profit_yen / position.qty
+    if stop_loss_yen:
+        sl = position.entry_price - sign * stop_loss_yen / position.qty
+    for name, price in (("利益確定", tp), ("損切り", sl)):
+        if price is not None and price <= 0:
+            raise PortfolioError(f"{name}の金額が大きすぎます (価格が 0 以下になります)。")
+    return tp, sl
+
+
 def required_margin(price: float, qty: int, leverage: float) -> float:
     return round(price * qty / leverage, 2)
 
@@ -149,6 +228,12 @@ def _check_leverage(leverage: object, symbol: str) -> None:
         raise PortfolioError(
             f"{inst.name}のレバレッジは 1 倍から {format_leverage(inst.max_leverage)}までで指定してください: {leverage}"
         )
+
+
+def _check_exit_amounts(*amounts: float | None) -> None:
+    for amount in amounts:
+        if amount is not None and amount < 0:
+            raise PortfolioError(f"利益確定・損切りの金額は 0 以上で指定してください: {amount}")
 
 
 def _check_qty(qty: object) -> None:
@@ -216,8 +301,21 @@ class Portfolio:
 
     # ---- 取引 ----------------------------------------------------------
 
-    def open(self, symbol: str, side: str, qty: int, price: float, at: str, leverage: float = 1.0) -> Position:
-        """新規に建玉を作る (証拠金の余力は呼び出し側で確認する)。"""
+    def open(
+        self,
+        symbol: str,
+        side: str,
+        qty: int,
+        price: float,
+        at: str,
+        leverage: float = 1.0,
+        take_profit_yen: float | None = None,
+        stop_loss_yen: float | None = None,
+    ) -> Position:
+        """新規に建玉を作る (証拠金の余力は呼び出し側で確認する)。
+
+        take_profit_yen / stop_loss_yen を渡すと、その金額の利益・損失で決済する注文も出す。
+        """
         get_instrument(symbol)
         if side not in SIDE_LABELS:
             raise PortfolioError(f"売買区分が不正です: {side}")
@@ -225,8 +323,22 @@ class Portfolio:
         _check_price(price)
         _check_leverage(leverage, symbol)
         position = Position(self.next_id, symbol, side, qty, price, at, float(leverage))
+        _check_exit_amounts(take_profit_yen, stop_loss_yen)
+        tp, sl = exit_prices(position, take_profit_yen, stop_loss_yen)
+        if tp is not None or sl is not None:
+            position.take_profit, position.stop_loss, position.exit_set_at = tp, sl, at
         self.next_id += 1
         self.positions.append(position)
+        return position
+
+    def set_exit(self, position_id: int, take_profit: float | None, stop_loss: float | None, at: str) -> Position:
+        """決済注文の価格を設定する (None なら取り消し)。at より後の値動きで判定する。"""
+        position = self.find(position_id)
+        for price in (take_profit, stop_loss):
+            if price is not None:
+                _check_price(price)
+        position.take_profit, position.stop_loss = take_profit, stop_loss
+        position.exit_set_at = at if take_profit is not None or stop_loss is not None else None
         return position
 
     def find(self, position_id: int) -> Position:

@@ -122,6 +122,10 @@ class TradeApp:
             layout=widgets.Layout(width="15em"),
         )
         self.leverage_hint = widgets.HTML(f"{format_leverage(first.max_leverage)}まで")
+        self.take_profit = widgets.IntText(
+            value=0, description="利益確定", style=label, layout=widgets.Layout(width="15em")
+        )
+        self.stop_loss = widgets.IntText(value=0, description="損切り", style=label, layout=widgets.Layout(width="15em"))
         self.order_date = widgets.Text(
             placeholder="空欄なら最新の価格（例: 2025-04-01）",
             description="約定日",
@@ -170,6 +174,8 @@ class TradeApp:
                 self.side,
                 _row(self.qty, self.unit),
                 _row(self.leverage, self.leverage_hint),
+                _row(self.take_profit, widgets.HTML("円")),
+                _row(self.stop_loss, widgets.HTML("円（0 なら注文しない。この金額の利益・損失になったら決済します）")),
                 self.order_date,
                 self.order_button,
                 self.order_message,
@@ -227,8 +233,12 @@ class TradeApp:
         self._cancel_close_all()
         symbol, side, qty, day_text = self.symbol.value, self.side.value, self.qty.value, self.order_date.value
         leverage = float(self.leverage.value)
+        tp, sl = self.take_profit.value or None, self.stop_loss.value or None
         self._run(
-            self.order_message, lambda: self.sim.open(symbol, side, qty, day=parse_date(day_text), leverage=leverage)
+            self.order_message,
+            lambda: self.sim.open(
+                symbol, side, qty, day=parse_date(day_text), leverage=leverage, take_profit_yen=tp, stop_loss_yen=sl
+            ),
         )
 
     def _on_close(self, _button: widgets.Button) -> None:

@@ -76,6 +76,19 @@ class TradeAppTest(unittest.TestCase):
         self.assertIn("通算損益: +25,000円", app.summary_view.value)
         self.assertIn("#1", app.history_view.value)
 
+    def test_order_with_leverage_and_exit_orders(self):
+        app = self.app
+        app.symbol.value = "USDJPY"
+        self.assertEqual(app.leverage_hint.value, "500倍まで")
+        app.leverage.value = 500.0
+        app.take_profit.value = 5000
+        app.stop_loss.value = 3000
+        app.order_button.click()
+        self.assertIn("レバレッジ 500倍", app.order_message.value)
+        self.assertIn("利確 150.500", app.order_message.value)
+        position = Portfolio.load(self.path).positions[0]
+        self.assertEqual((position.leverage, position.take_profit, position.stop_loss), (500.0, 150.5, 149.7))
+
     def test_partial_close(self):
         app = self.app
         app.order_button.click()

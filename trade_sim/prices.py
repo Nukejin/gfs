@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol
 
 from .instruments import Instrument
@@ -98,10 +98,12 @@ class YFinanceSource:
         self.cache_seconds = cache_seconds
         self._latest_cache: dict[str, tuple[float, Quote]] = {}
         self._candle_cache: dict[tuple[str, str, str], tuple[float, pd.DataFrame]] = {}
+        self._path_cache: dict[tuple[str, str, str], tuple[float, pd.DataFrame]] = {}
 
     def clear_cache(self) -> None:
         self._latest_cache.clear()
         self._candle_cache.clear()
+        self._path_cache.clear()
 
     def latest(self, inst: Instrument) -> Quote:
         cached = self._latest_cache.get(inst.key)
@@ -161,6 +163,40 @@ class YFinanceSource:
             raise PriceError(f"{inst.name}({inst.ticker}) の{timeframe.label}のデータがありません。期間を変えてみてください。")
         self._candle_cache[key] = (time.monotonic(), df)
         return df
+
+    def path(self, inst: Instrument, since: datetime) -> pd.DataFrame:
+        """since (日本時間) 以降に始まるローソク足 (Open/High/Low/Close)。決済注文の判定に使う。
+
+        Yahoo の制限があるので、直近 58 日は 5 分足、720 日までは 1 時間足、それより前は日足を使う。
+        使った足の種類は df.attrs["interval"] に入る。データが無ければ空の DataFrame を返す。
+        """
+        import pandas as pd
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=9)  # 日本時間
+        age = now - since
+        interval = "5m" if age <= timedelta(days=58) else "1h" if age <= timedelta(days=720) else "1d"
+        start = (since - timedelta(days=1)).date().isoformat()
+        key = (inst.key, interval, start)
+        cached = self._path_cache.get(key)
+        if cached is not None and time.monotonic() - cached[0] < self.cache_seconds:
+            df = cached[1]
+        else:
+            end = (now + timedelta(days=2)).date().isoformat()
+            df = self._history(inst, interval=interval, start=start, end=end)
+            columns = ["Open", "High", "Low", "Close"]
+            if df is None or df.empty or not set(columns) <= set(df.columns):
+                df = pd.DataFrame(columns=columns, index=pd.DatetimeIndex([]))
+            else:
+                df = df[columns].dropna().copy()
+                if interval == "1d":
+                    df.index = pd.DatetimeIndex([pd.Timestamp(ts.date()) for ts in df.index])
+                else:
+                    df.index = df.index.tz_convert("Asia/Tokyo").tz_localize(None)
+                df = df[~df.index.duplicated(keep="last")]
+            self._path_cache[key] = (time.monotonic(), df)
+        result = df[df.index >= pd.Timestamp(since)]
+        result.attrs["interval"] = interval
+        return result
 
     def _daily_closes(self, inst: Instrument, **kwargs) -> list[tuple[date, float]]:
         df = self._history(inst, interval="1d", **kwargs)

@@ -66,8 +66,11 @@ class NotebookFileTest(unittest.TestCase):
                 "print('PACKAGE', trade_sim.__file__)\n"
                 "print('DATA', DATA_FILE)\n"
             )
+            # セルが大きく、コマンドの引数では渡せない (-c だと長さの上限を超える) ので、ファイルに書いて実行する
+            script_path = Path(tmp) / "setup_cell.py"
+            script_path.write_text(script, encoding="utf-8")
             result = subprocess.run(
-                [sys.executable, "-c", script], cwd=tmp, capture_output=True, text=True, timeout=120
+                [sys.executable, str(script_path)], cwd=tmp, capture_output=True, text=True, timeout=120
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             tmp_dir = Path(tmp).resolve()

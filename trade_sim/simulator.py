@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -20,12 +20,17 @@ from .instruments import (
 )
 from .portfolio import (
     LOSSCUT,
+    REASON_LABELS,
     SIDE_LABELS,
     AccountStatus,
     Portfolio,
     PortfolioError,
+    Position,
     SummaryRow,
     Trade,
+    exit_prices,
+    find_exit,
+    parse_trade_time,
     required_margin,
 )
 from .prices import PriceError, PriceSource, YFinanceSource
@@ -103,6 +108,7 @@ class Result:
     lines: list[str] = field(default_factory=list)  # 約定の結果や合計など
     notes: list[str] = field(default_factory=list)  # 注意書き (価格を取得できなかった等)
     ok: bool = True
+    losscut: bool = False  # ロスカットが起きた
 
 
 # ---- 操作 ----------------------------------------------------------------
@@ -158,10 +164,13 @@ class Simulator:
         price: float | None = None,
         day: date | None = None,
         leverage: float = 1.0,
+        take_profit_yen: float | None = None,
+        stop_loss_yen: float | None = None,
     ) -> Result:
         """新規にロング (side="long") またはショート (side="short") で建てる。
 
         必要証拠金 (取引金額 ÷ レバレッジ) が余力を超える注文はできない。
+        take_profit_yen / stop_loss_yen (円) を渡すと、その金額の利益・損失になったら決済する注文も出す。
         """
         inst = find_instrument(symbol)
         if side not in SIDE_LABELS:
@@ -172,11 +181,15 @@ class Simulator:
             )
         if isinstance(qty, bool) or not isinstance(qty, int) or qty <= 0:
             raise InputError(f"数量は 1 以上の整数で指定してください: {qty}")
-        losscut = self.check_losscut()
-        if losscut is not None:
-            losscut.notes.append("ロスカットが発生したため、この注文は出していません。")
-            losscut.ok = False
-            return losscut
+        for amount in (take_profit_yen, stop_loss_yen):
+            if amount is not None and amount < 0:
+                raise InputError(f"利益確定・損切りの金額は 0 以上で指定してください (0 なら注文なし): {amount}")
+        events = self.check_triggers()
+        if events is not None and events.losscut:
+            events.notes.append("ロスカットが発生したため、この注文は出していません。")
+            events.ok = False
+            return events
+        event_lines = events.lines if events else []
 
         price, at, note = self._resolve_price(inst, price, day)
         portfolio = self.load()
@@ -189,15 +202,64 @@ class Simulator:
                 f"余力が足りません。この注文の必要証拠金は {fmt_amount(margin)}、余力は {fmt_amount(status.free_margin)}"
                 " です。数量を減らすか、レバレッジを上げてください。"
             )
-        position = portfolio.open(inst.key, side, qty, price, at, leverage)
+        position = portfolio.open(inst.key, side, qty, price, at, leverage, take_profit_yen, stop_loss_yen)
         portfolio.save(self.path)
-        return Result(
-            lines=[
-                f"新規{SIDE_LABELS[side]}: #{position.id} {inst.name} {inst.format_qty(position.qty)}"
-                f" @ {inst.format_price(price)}円 ({note})"
-                f"  レバレッジ {format_leverage(position.leverage)}・必要証拠金 {fmt_amount(position.required_margin)}"
+        lines = [
+            *event_lines,
+            f"新規{SIDE_LABELS[side]}: #{position.id} {inst.name} {inst.format_qty(position.qty)}"
+            f" @ {inst.format_price(price)}円 ({note})"
+            f"  レバレッジ {format_leverage(position.leverage)}・必要証拠金 {fmt_amount(position.required_margin)}",
+        ]
+        if position.take_profit is not None or position.stop_loss is not None:
+            lines.append(_exit_line(inst, position))
+        return Result(lines=lines)
+
+    def set_exit(
+        self, position_id: int | str, take_profit_yen: float | None = None, stop_loss_yen: float | None = None
+    ) -> Result:
+        """保有中の建玉に決済注文を出す (出し直す)。
+
+        金額 (円) が None ならその注文は今のまま、0 なら取り消す。
+        今の価格ですでに届いている金額は指定できない。注文を出した時点より後の値動きで判定する。
+        """
+        for amount in (take_profit_yen, stop_loss_yen):
+            if amount is not None and amount < 0:
+                raise InputError(f"利益確定・損切りの金額は 0 以上で指定してください (0 なら注文なし): {amount}")
+        events = self.check_triggers()
+        event_lines = events.lines if events else []
+        portfolio = self.load()
+        position_id = _parse_position_id(position_id)
+        try:
+            position = portfolio.find(position_id)
+        except PortfolioError:
+            if events is not None:  # 決済注文やロスカットで、ちょうど決済されたところ
+                events.notes.append(f"建玉 #{position_id} はすでに決済されています。")
+                return events
+            raise
+        inst = get_instrument(position.symbol)
+        new_tp, new_sl = exit_prices(position, take_profit_yen, stop_loss_yen)
+        tp = position.take_profit if take_profit_yen is None else new_tp
+        sl = position.stop_loss if stop_loss_yen is None else new_sl
+        if tp is not None or sl is not None:
+            latest = self.source.latest(inst).price
+            now = self.clock()
+            reached = [
+                name
+                for name, probe in (
+                    ("損切り", replace(position, take_profit=None, stop_loss=sl)),
+                    ("利益確定", replace(position, take_profit=tp, stop_loss=None)),
+                )
+                if find_exit(probe, (), latest, now) is not None
             ]
-        )
+            if reached:
+                raise InputError(
+                    f"今の価格 {inst.format_price(latest)} で、すでに{reached[0]}の価格に届いています。金額を変えてください。"
+                )
+        position = portfolio.set_exit(position_id, tp, sl, self.clock().strftime("%Y-%m-%d %H:%M"))
+        portfolio.save(self.path)
+        if tp is None and sl is None:
+            return Result(lines=[*event_lines, f"決済注文を取り消しました: #{position.id} {inst.name}"])
+        return Result(lines=[*event_lines, _exit_line(inst, position)])
 
     def close(
         self,
@@ -207,17 +269,22 @@ class Simulator:
         day: date | None = None,
     ) -> Result:
         """建玉を決済する。ids に "all" を渡すとすべての建玉。qty を指定すると一部だけ決済する。"""
-        losscut = self.check_losscut()
-        if losscut is not None:
-            losscut.notes.append("ロスカットで、保有中の建玉はすべて決済済みです。")
-            return losscut
+        events = self.check_triggers()
+        if events is not None and events.losscut:
+            events.notes.append("ロスカットで、保有中の建玉はすべて決済済みです。")
+            return events
+        event_lines = events.lines if events else []
         portfolio = self.load()
         if [str(i).lower() for i in ids] == ["all"]:
             targets = [p.id for p in portfolio.positions]
             if not targets:
-                return Result(lines=["決済する建玉がありません。"])
+                return Result(lines=[*event_lines, "決済する建玉がありません。"])
         else:
             targets = list(dict.fromkeys(_parse_position_id(i) for i in ids))
+            closed = [i for i in targets if i not in {p.id for p in portfolio.positions}]
+            if closed and events is not None:  # 決済注文で、ちょうど決済されたところ
+                events.notes.append(f"建玉 #{closed[0]} は決済注文ですでに決済されています。")
+                return events
         if not targets:
             raise InputError("決済する建玉の ID を指定してください。")
         if len(targets) > 1 and qty is not None:
@@ -237,14 +304,14 @@ class Simulator:
             lines.append(_close_line(inst, trade, note))
         portfolio.save(self.path)
         lines.append(f"実現損益の通算: {fmt_yen(portfolio.realized_pnl)}")
-        return Result(lines=lines)
+        return Result(lines=[*event_lines, *lines])
 
     def positions(self) -> Result:
-        losscut = self.check_losscut()
-        losscut_lines = losscut.lines if losscut else []
+        events = self.check_triggers()
+        event_lines = events.lines if events else []
         portfolio = self.load()
         if not portfolio.positions:
-            return Result(lines=[*losscut_lines, "保有中の建玉はありません。"])
+            return Result(lines=[*event_lines, "保有中の建玉はありません。"])
         prices, notes = self.latest_prices({p.symbol for p in portfolio.positions})
         rows = []
         total = 0.0
@@ -268,15 +335,19 @@ class Simulator:
                     current,
                     pnl_text,
                     fmt_amount(position.required_margin),
+                    "-" if position.take_profit is None else inst.format_price(position.take_profit),
+                    "-" if position.stop_loss is None else inst.format_price(position.stop_loss),
                     position.opened_at,
                 ]
             )
-        headers = ["建玉", "銘柄", "売買", "数量", "レバレッジ", "建値", "現在値", "評価損益", "必要証拠金", "約定日時"]
+        headers = [
+            "建玉", "銘柄", "売買", "数量", "レバレッジ", "建値", "現在値", "評価損益", "必要証拠金", "利確", "損切り", "約定日時",
+        ]
         suffix = " (現在値を取得できなかった建玉を除く)" if notes else ""
         used = sum(p.required_margin for p in portfolio.positions)
         return Result(
-            table=Table(headers, rows, "<<<>>>>>><"),
-            lines=[*losscut_lines, f"評価損益の合計: {fmt_yen(total)}{suffix}　必要証拠金の合計: {fmt_amount(used)}"],
+            table=Table(headers, rows, "<<<>>>>>>>><"),
+            lines=[*event_lines, f"評価損益の合計: {fmt_yen(total)}{suffix}　必要証拠金の合計: {fmt_amount(used)}"],
             notes=notes,
         )
 
@@ -302,7 +373,7 @@ class Simulator:
                     fmt_yen(trade.pnl),
                     trade.opened_at,
                     trade.closed_at,
-                    "ロスカット" if trade.reason == LOSSCUT else "",
+                    REASON_LABELS.get(trade.reason, ""),
                 ]
             )
         headers = ["建玉", "銘柄", "売買", "数量", "レバレッジ", "建値", "決済値", "損益", "約定日時", "決済日時", "備考"]
@@ -319,7 +390,7 @@ class Simulator:
 
     def summary(self) -> Result:
         """銘柄別と通算の損益。通算損益 = 実現損益 + 評価損益。口座の状態 (証拠金) も表示する。"""
-        losscut = self.check_losscut()
+        events = self.check_triggers()
         rows, errors = self.summary_rows()
         status, _ = self.account_status()
 
@@ -359,7 +430,7 @@ class Simulator:
         return Result(
             table=Table(headers, table_rows, "<>>>>>>", footer),
             lines=[
-                *(losscut.lines if losscut else []),
+                *(events.lines if events else []),
                 f"通算損益: {fmt_yen(total)}  (実現損益 {fmt_yen(realized)} + 評価損益 {fmt_yen(unrealized)})",
                 *_account_lines(status),
             ],
@@ -375,9 +446,9 @@ class Simulator:
         return portfolio.status(prices), errors
 
     def account(self) -> Result:
-        losscut = self.check_losscut()
+        events = self.check_triggers()
         status, errors = self.account_status()
-        return Result(lines=[*(losscut.lines if losscut else []), *_account_lines(status)], notes=errors)
+        return Result(lines=[*(events.lines if events else []), *_account_lines(status)], notes=errors)
 
     def set_account(self, initial_capital: float | None = None, losscut_level: float | None = None) -> Result:
         """初期資金とロスカット水準 (%、0 ならロスカットしない) を変える。"""
@@ -389,6 +460,72 @@ class Simulator:
             lines.append(f"初期資金を {fmt_amount(portfolio.initial_capital)} にしました。")
         if losscut_level is not None:
             lines.append(f"ロスカット水準を {fmt_losscut(portfolio.losscut_level)} にしました。")
+        return Result(lines=lines)
+
+    def check_triggers(self) -> Result | None:
+        """決済注文 (利益確定・損切り) とロスカットを判定して、条件を満たした建玉を決済する。
+
+        何も起きなければ None。ロスカットが起きたら Result.losscut が True。
+        """
+        exits = self.check_exit_orders()
+        losscut = self.check_losscut()
+        if exits is None and losscut is None:
+            return None
+        lines = [*(exits.lines if exits else []), *(losscut.lines if losscut else [])]
+        return Result(lines=lines, losscut=losscut is not None)
+
+    def check_exit_orders(self) -> Result | None:
+        """決済注文を出した後の値動き (ローソク足) を順に見て、価格に届いた建玉を、届いた時点で決済する。
+
+        アプリを閉じていた間の値動きも、ローソク足をさかのぼって判定する。
+        """
+        portfolio = self.load()
+        targets = [p for p in portfolio.positions if p.take_profit is not None or p.stop_loss is not None]
+        if not targets:
+            return None
+        now = self.clock()
+        fills = []  # (時刻, 記録する日時, 建玉, 約定価格, 理由)
+        get_path = getattr(self.source, "path", None)
+        for inst in INSTRUMENTS:
+            positions = [p for p in targets if p.symbol == inst.key]
+            if not positions:
+                continue
+            starts = {p.id: parse_trade_time(p.exit_set_at or p.opened_at) for p in positions}
+            candles: list[tuple[datetime, float, float, float]] = []
+            daily = False
+            if get_path is not None:
+                try:
+                    path = get_path(inst, min(starts.values()))
+                except PriceError:
+                    path = None
+                if path is not None and len(path):
+                    daily = path.attrs.get("interval") == "1d"
+                    candles = [
+                        (ts.to_pydatetime(), float(o), float(h), float(low))
+                        for ts, o, h, low in zip(path.index, path["Open"], path["High"], path["Low"])
+                    ]
+            try:
+                latest = self.source.latest(inst).price
+            except PriceError:
+                latest = None
+            for position in positions:
+                after = [c for c in candles if c[0] >= starts[position.id]]
+                hit = find_exit(position, after, latest, now)
+                if hit is None:
+                    continue
+                when, price, reason = hit
+                at = when.strftime("%Y-%m-%d" if daily and when != now else "%Y-%m-%d %H:%M")
+                fills.append((when, at, position, round(price, inst.price_decimals + 2), reason))
+        if not fills:
+            return None
+        fills.sort(key=lambda fill: fill[0])
+        lines = []
+        for _, at, position, price, reason in fills:
+            inst = get_instrument(position.symbol)
+            trade = portfolio.close(position.id, price, at, reason=reason)
+            lines.append(_close_line(inst, trade, f"{REASON_LABELS[reason]} {at}"))
+        portfolio.save(self.path)
+        lines.append(f"実現損益の通算: {fmt_yen(portfolio.realized_pnl)}")
         return Result(lines=lines)
 
     def check_losscut(self) -> Result | None:
@@ -473,6 +610,17 @@ def _close_line(inst: Instrument, trade: Trade, note: str) -> str:
         f"  建値 {inst.format_price(trade.entry_price)} → 決済値 {inst.format_price(trade.exit_price)}"
         f" ({note})  損益 {fmt_yen(trade.pnl)}"
     )
+
+
+def _exit_line(inst: Instrument, position: Position) -> str:
+    parts = []
+    if position.take_profit is not None:
+        parts.append(
+            f"利確 {inst.format_price(position.take_profit)} ({fmt_yen(position.exit_pnl(position.take_profit))})"
+        )
+    if position.stop_loss is not None:
+        parts.append(f"損切り {inst.format_price(position.stop_loss)} ({fmt_yen(position.exit_pnl(position.stop_loss))})")
+    return f"決済注文: #{position.id} {inst.name} {SIDE_LABELS[position.side]}　" + "・".join(parts)
 
 
 def fmt_losscut(level: float) -> str:

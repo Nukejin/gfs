@@ -180,6 +180,23 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("余力が足りません", err)
 
+    def test_exit_orders(self):
+        code, out, _ = self.run_cli("long", "usdjpy", "100000", "-l", "500", "--tp", "50000", "--sl", "30000")
+        self.assertEqual(code, 0)
+        self.assertIn("レバレッジ 500倍・必要証拠金 30,000円", out)
+        self.assertIn("利確 150.500 (+50,000円)・損切り 149.700 (-30,000円)", out)
+
+        code, out, _ = self.run_cli("tpsl", "1", "--sl", "0")
+        self.assertEqual(code, 0)
+        self.assertIn("利確 150.500", out)
+        self.assertNotIn("損切り", out)
+
+        self.source.latest_prices["USDJPY"] = 150.6
+        _, out, _ = self.run_cli("positions")
+        self.assertIn("損益 +50,000円", out)
+        _, out, _ = self.run_cli("history")
+        self.assertIn("利確", out)
+
     def test_reset(self):
         self.run_cli("long", "kioxia", "100")
         code, out, _ = self.run_cli("reset", "--yes")

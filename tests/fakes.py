@@ -13,6 +13,9 @@ class FakeSource:
         self.latest_prices: dict[str, float] = dict(latest or {})
         self.history: dict[str, dict[date, float]] = dict(history or {})
         self.as_of = as_of
+        # 決済注文の判定に使う値動き: 銘柄 ID -> [(時刻, 始値, 高値, 安値, 終値), ...]
+        self.paths: dict[str, list[tuple[datetime, float, float, float, float]]] = {}
+        self.path_interval = "5m"
 
     def latest(self, inst: Instrument) -> Quote:
         if inst.key not in self.latest_prices:
@@ -48,3 +51,17 @@ class FakeSource:
             },
             index=index,
         )
+
+    def path(self, inst: Instrument, since: datetime):
+        """paths に入れた値動きのうち、since 以降に始まるもの。入れていない銘柄は None (データなし)。"""
+        if inst.key not in self.paths:
+            return None
+        import pandas as pd
+
+        rows = [row for row in self.paths[inst.key] if row[0] >= since]
+        df = pd.DataFrame(
+            {name: [row[i] for row in rows] for i, name in enumerate(["Open", "High", "Low", "Close"], start=1)},
+            index=pd.DatetimeIndex([row[0] for row in rows]),
+        )
+        df.attrs["interval"] = self.path_interval
+        return df

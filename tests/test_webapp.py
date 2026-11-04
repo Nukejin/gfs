@@ -69,7 +69,7 @@ class WebAppTest(unittest.TestCase):
     def test_order_panel_follows_the_chart_symbol(self):
         self.at.selectbox(key="symbol").select("USDJPY").run()
         self.assertEqual(self.at.number_input(key="order_qty_fx").value, 10000)  # 為替は 1 万通貨が初期値
-        self.assertEqual(self.at.select_slider(key="order_leverage_fx").label, "レバレッジ（25倍まで）")
+        self.assertEqual(self.at.select_slider(key="order_leverage_fx").label, "レバレッジ（500倍まで）")
         self.click(LONG_BUTTON)
         self.assertIn("新規ロング: #1 ドル円 10,000通貨", self.at.success[0].value)
 
@@ -134,6 +134,33 @@ class WebAppTest(unittest.TestCase):
         del self.source.latest_prices["KIOXIA"]
         self.click("価格を今すぐ更新")
         self.assertTrue(next(b for b in self.at.button if b.label == LONG_BUTTON).disabled)
+
+    def test_order_with_exit_orders_and_change_them(self):
+        self.at.selectbox(key="symbol").select("USDJPY").run()
+        self.at.number_input(key="order_tp").set_value(5000).run()
+        self.at.number_input(key="order_sl").set_value(3000).run()
+        self.click(LONG_BUTTON)  # 1 万通貨 @ 150.000 → 利確 150.500、損切り 149.700
+        self.assertIn("決済注文: #1 ドル円 ロング　利確 150.500 (+5,000円)・損切り 149.700 (-3,000円)", self.at.success[0].value)
+        position = Portfolio.load(self.path).positions[0]
+        self.assertEqual((position.take_profit, position.stop_loss), (150.5, 149.7))
+        # 選んだ建玉の決済注文が入力欄に読み込まれる
+        self.assertEqual((self.at.number_input(key="exit_tp").value, self.at.number_input(key="exit_sl").value), (5000, 3000))
+
+        self.at.number_input(key="exit_tp").set_value(0).run()
+        self.at.number_input(key="exit_sl").set_value(8000).run()
+        self.click("決済注文を設定")
+        position = Portfolio.load(self.path).positions[0]
+        self.assertEqual((position.take_profit, position.stop_loss), (None, 149.2))
+
+    def test_exit_order_fill_is_announced(self):
+        self.at.selectbox(key="symbol").select("USDJPY").run()
+        self.at.number_input(key="order_sl").set_value(3000).run()
+        self.click(LONG_BUTTON)
+        self.source.latest_prices["USDJPY"] = 149.0
+        self.click("価格を今すぐ更新")
+        self.assertIn("損切り", self.at.info[0].value)
+        trade = Portfolio.load(self.path).trades[0]
+        self.assertEqual((trade.reason, trade.pnl), ("stop_loss", -3000.0))
 
     def test_history_has_csv_download(self):
         self.order("KIOXIA", "long")

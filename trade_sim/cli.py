@@ -38,7 +38,20 @@ def cmd_quote(args: argparse.Namespace, sim: Simulator) -> Result:
 
 
 def cmd_open(args: argparse.Namespace, sim: Simulator) -> Result:
-    return sim.open(args.symbol, args.side, args.qty, price=args.price, day=args.date, leverage=args.leverage)
+    return sim.open(
+        args.symbol,
+        args.side,
+        args.qty,
+        price=args.price,
+        day=args.date,
+        leverage=args.leverage,
+        take_profit_yen=args.tp,
+        stop_loss_yen=args.sl,
+    )
+
+
+def cmd_tpsl(args: argparse.Namespace, sim: Simulator) -> Result:
+    return sim.set_exit(args.id, take_profit_yen=args.tp, stop_loss_yen=args.sl)
 
 
 def cmd_close(args: argparse.Namespace, sim: Simulator) -> Result:
@@ -119,6 +132,15 @@ def _date(text: str) -> date:
     return day
 
 
+def _add_exit_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--tp", type=_non_negative_float, metavar="YEN", help="この金額の利益になったら決済する (利益確定。円)"
+    )
+    parser.add_argument(
+        "--sl", type=_non_negative_float, metavar="YEN", help="この金額の損失になったら決済する (損切り。円)"
+    )
+
+
 def _add_price_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--date",
@@ -140,9 +162,11 @@ def _epilog() -> str:
         "  python -m trade_sim quote                       現在値を表示",
         "  python -m trade_sim long kioxia 100             キオクシアを 100 株ロング",
         "  python -m trade_sim short usdjpy 10000 -l 10    ドル円を 1 万通貨、レバレッジ 10 倍でショート",
+        "  python -m trade_sim long usdjpy 10000 --tp 5000 --sl 3000   +5,000円で利確・-3,000円で損切りする注文つき",
         "  python -m trade_sim long 6920 100 --date 2025-04-01   過去の終値で約定",
         "  python -m trade_sim positions                   保有中の建玉と評価損益",
         "  python -m trade_sim close 1                     建玉 #1 を決済",
+        "  python -m trade_sim tpsl 1 --tp 20000 --sl 0    建玉 #1 の利確を +20,000円 に変え、損切りを取り消す",
         "  python -m trade_sim summary                     通算損益を表示",
         "  python -m trade_sim account                     資金・証拠金・余力・証拠金維持率を表示",
     ]
@@ -179,8 +203,9 @@ def build_parser() -> argparse.ArgumentParser:
             type=_positive_float,
             default=1.0,
             metavar="X",
-            help="レバレッジ (株は 3.3 倍、為替は 25 倍まで。既定: 1 倍)",
+            help="レバレッジ (株は 3.3 倍、為替は 500 倍まで。既定: 1 倍)",
         )
+        _add_exit_options(p)
         _add_price_options(p)
         p.set_defaults(func=cmd_open, side=side)
 
@@ -199,6 +224,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("summary", aliases=["pnl"], help="銘柄別と通算の損益を表示する")
     p.set_defaults(func=cmd_summary)
+
+    p = sub.add_parser(
+        "tpsl",
+        help="保有中の建玉に決済注文 (利益確定・損切り) を出す・変える",
+        description=(
+            "保有中の建玉に、指定した金額の利益・損失になったら決済する注文を出します。"
+            "指定しなかった方は今の注文のまま、0 を指定するとその注文を取り消します。"
+        ),
+    )
+    p.add_argument("id", metavar="ID", help="建玉の ID")
+    _add_exit_options(p)
+    p.set_defaults(func=cmd_tpsl)
 
     p = sub.add_parser(
         "account",

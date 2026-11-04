@@ -16,7 +16,18 @@ import streamlit as st
 
 from .charts import DOWN, UP, candle_figure, equity_figure, pnl_by_instrument_figure
 from .instruments import INSTRUMENTS, LEVERAGE_CHOICES, Instrument, format_leverage, get_instrument
-from .portfolio import LONG, LOSSCUT, SHORT, SIDE_LABELS, AccountStatus, Portfolio, SummaryRow
+from .portfolio import (
+    LONG,
+    LOSSCUT,
+    REASON_LABELS,
+    SHORT,
+    SIDE_LABELS,
+    AccountStatus,
+    Portfolio,
+    Position,
+    SummaryRow,
+    exit_prices,
+)
 from .prices import TIMEFRAMES, PriceError, YFinanceSource, get_timeframe
 from .simulator import (
     USER_ERRORS,
@@ -33,6 +44,7 @@ from .simulator import (
 DEFAULT_FILE = os.environ.get("TRADE_SIM_FILE", "portfolio.json")
 DEFAULT_QTY = {"stock": 100, "fx": 10000}
 QTY_STEP = {"stock": 100, "fx": 1000}
+EXIT_STEP = 1000  # 利益確定・損切りの金額 (円) の刻み
 REFRESH_CHOICES = {"30秒": 30, "1分": 60, "5分": 300}
 SIDE_CHOICES = {LONG: "ロング（買い）", SHORT: "ショート（売り）"}
 OLDEST_DATE = date(2000, 1, 1)
@@ -63,7 +75,7 @@ def _name(key: str) -> str:
 
 
 def _run_action(action: Callable[[], Result]) -> None:
-    st.session_state.pop("losscut_notice", None)  # 前のロスカットの知らせは、次の操作で消す
+    st.session_state.pop("notice", None)  # 前のロスカット・決済注文の知らせは、次の操作で消す
     try:
         result = action()
     except USER_ERRORS as e:
@@ -84,8 +96,22 @@ def _place_order() -> None:
             int(state[f"order_qty_{inst.kind}"]),
             day=state.get("order_date"),
             leverage=float(state[f"order_leverage_{inst.kind}"]),
+            take_profit_yen=float(state.get("order_tp") or 0) or None,
+            stop_loss_yen=float(state.get("order_sl") or 0) or None,
         )
     )
+
+
+def _set_exit() -> None:
+    state = st.session_state
+    sim = _simulator()
+    # 0 は取り消し。両方を毎回指定する
+    _run_action(
+        lambda: sim.set_exit(
+            state["close_id"], take_profit_yen=float(state["exit_tp"] or 0), stop_loss_yen=float(state["exit_sl"] or 0)
+        )
+    )
+    state.pop("exit_loaded_for", None)  # 設定した内容で入力欄を読み込み直す
 
 
 def _close_selected() -> None:
@@ -115,7 +141,7 @@ def _save_account() -> None:
 def _refresh_prices() -> None:
     # 前の操作のメッセージは消す
     st.session_state.pop("flash", None)
-    st.session_state.pop("losscut_notice", None)
+    st.session_state.pop("notice", None)
     _simulator().refresh_prices()
 
 
@@ -142,6 +168,19 @@ def _show_table(df: pd.DataFrame, pnl_columns: tuple[str, ...] = (), right_colum
     st.dataframe(styler, hide_index=True, column_config=config)
 
 
+def _exit_text(inst: Instrument, position: Position, price: float | None) -> str:
+    if price is None:
+        return "-"
+    return f"{inst.format_price(price)}（{fmt_yen(position.exit_pnl(price))}）"
+
+
+def _exit_amounts(position: Position) -> tuple[int, int]:
+    """建玉の決済注文を、利益確定・損切りの金額 (円) に直す。注文が無ければ 0。"""
+    tp = round(position.exit_pnl(position.take_profit)) if position.take_profit is not None else 0
+    sl = -round(position.exit_pnl(position.stop_loss)) if position.stop_loss is not None else 0
+    return tp, sl
+
+
 def _positions_frame(portfolio: Portfolio, prices: dict[str, float | None]) -> pd.DataFrame:
     rows = []
     for p in portfolio.positions:
@@ -158,6 +197,8 @@ def _positions_frame(portfolio: Portfolio, prices: dict[str, float | None]) -> p
                 "現在値": inst.format_price(price) if price is not None else "-",
                 "評価損益": p.unrealized_pnl(price) if price is not None else None,
                 "必要証拠金": fmt_amount(p.required_margin),
+                "利確": _exit_text(inst, p, p.take_profit),
+                "損切り": _exit_text(inst, p, p.stop_loss),
                 "約定日時": p.opened_at,
             }
         )
@@ -211,7 +252,7 @@ def _history_frame(portfolio: Portfolio) -> pd.DataFrame:
                 "損益": t.pnl,
                 "約定日時": t.opened_at,
                 "決済日時": t.closed_at,
-                "備考": "ロスカット" if t.reason == LOSSCUT else "",
+                "備考": REASON_LABELS.get(t.reason, ""),
             }
         )
     return pd.DataFrame(rows)
@@ -320,6 +361,8 @@ def _order_panel(sim: Simulator, inst: Instrument, status: AccountStatus, today:
     state.setdefault(qty_key, DEFAULT_QTY[kind])
     state.setdefault(leverage_key, 1.0)
     state.setdefault("order_side", LONG)
+    state.setdefault("order_tp", 0)
+    state.setdefault("order_sl", 0)
 
     with st.container(border=True):
         st.markdown(f"**{inst.name}を注文**")
@@ -355,6 +398,21 @@ def _order_panel(sim: Simulator, inst: Instrument, status: AccountStatus, today:
             key="order_date",
             help="日付を入れると、その日の終値で約定します（休場日なら直前の営業日）。",
         )
+        c1, c2 = st.columns(2)
+        c1.number_input(
+            "利益確定（円）",
+            min_value=0,
+            step=EXIT_STEP,
+            key="order_tp",
+            help="この金額の利益になったら決済します。0 なら注文しません。",
+        )
+        c2.number_input(
+            "損切り（円）",
+            min_value=0,
+            step=EXIT_STEP,
+            key="order_sl",
+            help="この金額の損失になったら決済します。0 なら注文しません。",
+        )
 
         if quote is not None:
             qty, leverage = int(state[qty_key]), float(state[leverage_key])
@@ -366,6 +424,17 @@ def _order_panel(sim: Simulator, inst: Instrument, status: AccountStatus, today:
                 step = QTY_STEP[kind]
                 max_qty = max(0, math.floor(free * leverage / quote.price / step) * step)
                 rows.append(("建てられる最大数量", inst.format_qty(max_qty)))
+            if state.get("order_tp") or state.get("order_sl"):
+                probe = Position(0, inst.key, state["order_side"], qty, quote.price, "")
+                try:
+                    tp, sl = exit_prices(probe, state.get("order_tp") or None, state.get("order_sl") or None)
+                except USER_ERRORS as e:
+                    st.warning(str(e))
+                else:
+                    if tp is not None:
+                        rows.append(("利確の価格", inst.format_price(tp)))
+                    if sl is not None:
+                        rows.append(("損切りの価格", inst.format_price(sl)))
             st.markdown(_estimate_html(rows), unsafe_allow_html=True)
             if free is not None and margin > free:
                 st.warning("余力が足りません。数量を減らすか、レバレッジを上げてください。")
@@ -394,15 +463,32 @@ def _positions_section(sim: Simulator, portfolio: Portfolio, today: date) -> Non
             f"#{p.id} {inst.name} {SIDE_LABELS[p.side]} {inst.format_qty(p.qty)}"
             f" @ {inst.format_price(p.entry_price)}（{format_leverage(p.leverage)}）"
         )
-    c1, c2, c3 = st.columns([4, 2, 2], vertical_alignment="bottom")
-    c1.selectbox("決済する建玉", list(labels), format_func=labels.get, key="close_id")
-    c2.number_input("数量（0 ならすべて）", min_value=0, step=1, key="close_qty")
-    c3.date_input("決済日（空欄なら最新の価格）", value=None, min_value=OLDEST_DATE, max_value=today, key="close_date")
-    with st.container(horizontal=True):
-        st.button("決済する", type="primary", on_click=_close_selected, icon=":material/check:")
-        with st.popover("すべて決済", icon=":material/done_all:"):
-            st.write(f"保有中の建玉 {len(portfolio.positions)} 件をすべて決済します。")
-            st.button("すべて決済する", type="primary", on_click=_close_all, key="close_all_confirm")
+    state = st.session_state
+    st.selectbox("建玉を選ぶ", list(labels), format_func=labels.get, key="close_id")
+    selected = next(p for p in portfolio.positions if p.id == state["close_id"])
+    # 選んだ建玉が変わったら、その建玉の決済注文を入力欄に読み込む
+    if state.get("exit_loaded_for") != selected.id:
+        state["exit_tp"], state["exit_sl"] = _exit_amounts(selected)
+        state["exit_loaded_for"] = selected.id
+
+    close_column, exit_column = st.columns(2, gap="large")
+    with close_column:
+        st.markdown("**決済する**")
+        c1, c2 = st.columns(2)
+        c1.number_input("数量（0 ならすべて）", min_value=0, step=1, key="close_qty")
+        c2.date_input("決済日（空欄なら最新の価格）", value=None, min_value=OLDEST_DATE, max_value=today, key="close_date")
+        with st.container(horizontal=True):
+            st.button("決済する", type="primary", on_click=_close_selected, icon=":material/check:")
+            with st.popover("すべて決済", icon=":material/done_all:"):
+                st.write(f"保有中の建玉 {len(portfolio.positions)} 件をすべて決済します。")
+                st.button("すべて決済する", type="primary", on_click=_close_all, key="close_all_confirm")
+    with exit_column:
+        st.markdown("**決済注文（利益確定・損切り）**")
+        c1, c2 = st.columns(2)
+        c1.number_input("利益確定（円）", min_value=0, step=EXIT_STEP, key="exit_tp", help="0 なら注文しません。")
+        c2.number_input("損切り（円）", min_value=0, step=EXIT_STEP, key="exit_sl", help="0 なら注文しません。")
+        st.button("決済注文を設定", on_click=_set_exit, icon=":material/flag:")
+        st.caption("注文を出した後の値動きで判定します。アプリを閉じていた間の値動きも、5分足をさかのぼって判定します。")
 
 
 def _trade_tab(sim: Simulator, portfolio: Portfolio, status: AccountStatus) -> None:
@@ -439,7 +525,7 @@ def _trade_tab(sim: Simulator, portfolio: Portfolio, status: AccountStatus) -> N
             figure = candle_figure(inst, candles, timeframe, period, portfolio.trades, portfolio.positions, show_ma=show_ma)
             st.plotly_chart(figure, key="candle_chart", config={"displaylogo": False, "scrollZoom": True})
             st.caption(
-                "▲ ロングで建てた位置　▼ ショートで建てた位置　× 決済した位置　点線は保有中の建値。"
+                "▲ ロングで建てた位置　▼ ショートで建てた位置　× 決済した位置　点線は保有中の建値、破線は決済注文の価格。"
                 " ドラッグで移動、ホイールで拡大できます。"
             )
     with order_column:
@@ -462,8 +548,14 @@ def _pnl_tab(portfolio: Portfolio, rows: list[SummaryRow], errors: list[str], si
     c1, c2, c3 = st.columns(3)
     _kpi(c1, "実現損益", fmt_yen(realized), f"決済 {trades} 回", "決済した取引の損益の合計", _pnl_color_of(realized))
     _kpi(c2, "勝率", fmt_rate(wins / trades if trades else None), f"{wins}勝 {losses}敗", "利益が出た決済の割合")
-    losscuts = sum(1 for t in portfolio.trades if t.reason == LOSSCUT)
-    _kpi(c3, "ロスカット", f"{losscuts} 回", "強制決済された建玉の数", "ロスカットで決済された建玉の数")
+    counts = {reason: sum(1 for t in portfolio.trades if t.reason == reason) for reason in REASON_LABELS}
+    _kpi(
+        c3,
+        "ロスカット",
+        f"{counts[LOSSCUT]} 回",
+        "・".join(f"{label} {counts[reason]} 回" for reason, label in REASON_LABELS.items() if reason != LOSSCUT),
+        "ロスカットで強制決済された回数と、決済注文（利確・損切り）で決済された回数",
+    )
 
     current_total = None
     if not errors:
@@ -502,18 +594,22 @@ def _history_tab(portfolio: Portfolio) -> None:
 def _dashboard() -> None:
     sim = _simulator()
     try:
-        losscut = sim.check_losscut()
+        events = sim.check_triggers()
         portfolio = sim.load()
         status, errors = sim.account_status()
         rows, _ = sim.summary_rows()
     except USER_ERRORS as e:
         st.error(str(e))
         return
-    if losscut is not None:
-        st.session_state["losscut_notice"] = "\n".join(losscut.lines)
-    notice = st.session_state.get("losscut_notice")
+    if events is not None:
+        st.session_state["notice"] = {"losscut": events.losscut, "text": "\n".join(events.lines)}
+    notice = st.session_state.get("notice")
     if notice:
-        st.error(notice.replace("\n", "  \n"), icon=":material/warning:")
+        text = notice["text"].replace("\n", "  \n")
+        if notice["losscut"]:
+            st.error(text, icon=":material/warning:")
+        else:
+            st.info(text, icon=":material/notifications:")
 
     st.caption(f"最終更新 {sim.clock():%Y-%m-%d %H:%M:%S}（日本時間）　データ: {sim.path}")
     _account_header(status, errors)

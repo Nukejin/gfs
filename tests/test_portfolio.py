@@ -117,8 +117,8 @@ class LeverageAndAccountTest(unittest.TestCase):
     def test_leverage_limits(self):
         pf = Portfolio()
         pf.open("LASERTEC", LONG, 100, 20000.0, "2026-11-02", leverage=3.3)
-        pf.open("EURJPY", LONG, 10000, 160.0, "2026-11-02", leverage=25)
-        for symbol, leverage in (("KIOXIA", 5), ("USDJPY", 30), ("USDJPY", 0.5), ("KIOXIA", True)):
+        pf.open("EURJPY", LONG, 10000, 160.0, "2026-11-02", leverage=500)  # 為替は 500 倍まで
+        for symbol, leverage in (("KIOXIA", 5), ("USDJPY", 501), ("USDJPY", 0.5), ("KIOXIA", True)):
             with self.subTest(symbol=symbol, leverage=leverage), self.assertRaises(PortfolioError):
                 pf.open(symbol, LONG, 100, 1000.0, "2026-11-02", leverage=leverage)
 

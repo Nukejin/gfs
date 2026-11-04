@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from .instruments import Instrument, get_instrument
-from .portfolio import LONG, SIDE_LABELS, Position, SummaryRow, Trade
+from .portfolio import LONG, SIDE_LABELS, Position, SummaryRow, Trade, parse_trade_time
 from .prices import Timeframe
 from .simulator import fmt_yen
 
@@ -24,11 +24,7 @@ MA_COLORS = ("#e8890c", "#2a9d63", "#9549c4")
 GRID = "rgba(127, 127, 127, 0.18)"
 
 
-def trade_time(text: str) -> datetime:
-    """記録された約定日時を datetime にする。日付だけのもの (終値で約定) はその日の取引終了後として扱う。"""
-    if len(text) <= 10:
-        return datetime.fromisoformat(text) + timedelta(hours=23, minutes=59)
-    return datetime.fromisoformat(text)
+trade_time = parse_trade_time  # 記録された約定日時を datetime にする
 
 
 def locate(index: pd.DatetimeIndex, when: datetime) -> int | None:
@@ -201,6 +197,19 @@ def _add_trade_marks(
             row=1,
             col=1,
         )
+        for price, label, line_color in ((position.take_profit, "利確", UP), (position.stop_loss, "損切り", DOWN)):
+            if price is None:
+                continue
+            fig.add_hline(
+                y=price,
+                line={"color": line_color, "width": 1, "dash": "dash"},
+                annotation_text=f"#{position.id} {label} {inst.format_price(price)}",
+                annotation_position="bottom right",
+                annotation_font={"color": line_color, "size": 11},
+                annotation_bgcolor="rgba(127, 127, 127, 0.12)",
+                row=1,
+                col=1,
+            )
 
     for side, symbol, color, name in ((LONG, "triangle-up", UP, "ロング"), ("short", "triangle-down", DOWN, "ショート")):
         xs, ys, texts = [], [], []
