@@ -7,10 +7,11 @@
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Klee+One:wght@400;600&family=Zen+Kaku+Gothic+New:wght@400;500&display=swap">
 <style>
-/* Layout: the pencil sketch itself, on one screen. A ruled 8x8 sheet, HOLD stacked
-   on its right, the block in hand and the incoming queue underneath. Light theme is
-   a graph-paper notebook, dark theme is a chalkboard. Everything scales from --c,
-   the side of one board cell. */
+/* Layout: the pencil sketch itself, on one screen. A ruled sheet of squares, HOLD
+   stacked on its right, the block in hand and the incoming queue underneath. A menu
+   page in the same notebook comes first and picks how many squares the sheet has.
+   Light theme is a graph-paper notebook, dark theme is a chalkboard. The game scales
+   from --c, one eighth of the sheet's side; --cell is one square of the sheet. */
 :root {
   --paper: #f3f5f9;
   --sheet: #fdfeff;
@@ -92,85 +93,64 @@ body {
   padding-right: max(16px, env(safe-area-inset-right, 0px));
   overflow: auto;
 }
-.game {
-  --c: clamp(22px, min(calc((100cqw - 4px) / 10.1), calc((100cqh - 8rem) / 10.6)), 64px);
-  width: calc(var(--c) * 10.1 + 4px);
-  min-height: 100%;
-  margin-inline: auto;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 10px;
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
-}
 
-/* ---------- header ---------- */
-.top {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-h1 {
+/* ---------- shared pieces ---------- */
+.label {
   margin: 0;
-  font: 600 clamp(1.05rem, calc(var(--c) * 0.6), 1.7rem) / 1.2 var(--font-display);
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-.scores {
-  display: flex;
-  gap: 14px;
-  margin: 0;
-}
-.scores div {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
-.scores dt, .label {
   font: 600 0.72rem / 1 var(--font-display);
   letter-spacing: 0.14em;
   color: var(--pencil-soft);
 }
-.scores dd {
-  margin: 0;
-  min-width: 2.5ch;
-  text-align: right;
-  font: 600 1.2rem / 1 var(--font-display);
-  font-variant-numeric: tabular-nums;
-}
-
-/* ---------- board ---------- */
-.stage {
-  display: grid;
-  grid-template-columns: auto calc(var(--c) * 1.8);
-  gap: calc(var(--c) * 0.3);
-}
-.board {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(8, var(--c));
-  grid-template-rows: repeat(8, var(--c));
-  border: 2px solid var(--pencil);
-  border-radius: 3px;
-  background: var(--sheet);
-  touch-action: none;
-  cursor: pointer;
-}
-.board:focus-visible, .slot:focus-visible, .btn:focus-visible, .restart:focus-visible {
+:is(.board, .slot, .btn, .textbtn, .rot):focus-visible,
+.chip input:focus-visible + label {
   outline: 2px solid var(--b2);
   outline-offset: 3px;
 }
+.btn {
+  padding: 0.7em 1.2em;
+  border: 2px solid var(--pencil);
+  border-radius: 14px 5px 12px 6px / 6px 12px 5px 14px;
+  background: var(--pencil);
+  color: var(--sheet);
+  font: 600 1rem / 1.2 var(--font-display);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.btn.plain {
+  background: transparent;
+  color: var(--pencil);
+}
+.textbtn {
+  padding: 0.5em 0;
+  border: 0;
+  border-bottom: 1.5px solid var(--pencil-soft);
+  background: none;
+  color: var(--pencil-soft);
+  font: 500 0.85rem / 1.2 var(--font-body);
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* a sheet of squares: the board in play, and its small preview in the menu */
+.sheet {
+  --n: 8;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--n), var(--cell));
+  grid-template-rows: repeat(var(--n), var(--cell));
+  border: 2px solid var(--pencil);
+  border-radius: 3px;
+  background: var(--sheet);
+}
 .cell {
-  --u: var(--c);
+  --u: var(--cell);
   position: relative;
   border-right: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
 }
-.cell:nth-child(8n) { border-right: 0; }
-.cell:nth-child(n + 57):nth-child(-n + 64) { border-bottom: 0; }
+.cell.lc { border-right: 0; }
+.cell.lr { border-bottom: 0; }
 .cell.wc { background: color-mix(in srgb, var(--g) 26%, transparent); }
 
 /* a block: marker fill with a darker (or, on the chalkboard, chalkier) outline */
@@ -201,6 +181,156 @@ h1 {
   animation: vanish 0.36s ease-in both;
 }
 
+/* ---------- menu ---------- */
+.menu {
+  width: min(100%, 23rem);
+  min-height: 100%;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 20px;
+}
+.menu-head {
+  display: grid;
+  gap: 8px;
+}
+.title {
+  margin: 0;
+  font: 600 clamp(2rem, 11cqw, 2.8rem) / 1.1 var(--font-display);
+  letter-spacing: 0.06em;
+}
+.lead {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--pencil-soft);
+}
+.setup {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+}
+.preview { --cell: calc(8.2rem / var(--n)); }
+.sizes {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.sizes legend {
+  padding: 0;
+  margin-bottom: 9px;
+}
+.chips {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+.chip { position: relative; }
+.chip input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.chip label {
+  display: grid;
+  place-items: center;
+  height: 2.5rem;
+  border: 1.5px solid var(--pencil-soft);
+  border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px;
+  font: 600 1.05rem / 1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.chip:nth-child(even) label { border-radius: 15px 225px 15px 255px / 255px 15px 225px 15px; }
+.chip input:checked + label {
+  border-color: var(--pencil);
+  background: var(--pencil);
+  color: var(--sheet);
+}
+.size-note {
+  margin: 10px 0 0;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--pencil-soft);
+}
+.actions {
+  display: grid;
+  gap: 10px;
+}
+.howto {
+  display: grid;
+  gap: 9px;
+}
+.howto ul {
+  margin: 0;
+  padding-left: 1.25em;
+  display: grid;
+  gap: 4px;
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+.howto .keys { display: none; }
+
+/* ---------- game ---------- */
+.game {
+  --c: clamp(22px, min(calc((100cqw - 4px) / 10.1), calc((100cqh - 4.5rem) / 10.6)), 64px);
+  width: calc(var(--c) * 10.1 + 4px);
+  min-height: 100%;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.top h1 {
+  margin: 0;
+  font: 600 clamp(1.05rem, calc(var(--c) * 0.6), 1.7rem) / 1.2 var(--font-display);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.scores {
+  display: flex;
+  gap: 14px;
+  margin: 0;
+}
+.scores div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.scores dd {
+  margin: 0;
+  min-width: 2.5ch;
+  text-align: right;
+  font: 600 1.2rem / 1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.stage {
+  display: grid;
+  grid-template-columns: auto calc(var(--c) * 1.8);
+  gap: calc(var(--c) * 0.3);
+}
+.board {
+  --cell: calc(var(--c) * 8 / var(--n));
+  touch-action: none;
+  cursor: pointer;
+}
 .toast {
   position: absolute;
   inset: 0;
@@ -220,7 +350,6 @@ h1 {
   opacity: 1;
   animation: rise 1.1s ease-out both;
 }
-
 .over {
   position: absolute;
   inset: 0;
@@ -249,19 +378,19 @@ h1 {
   color: var(--pencil-soft);
 }
 .over-note.record { color: var(--red); font-weight: 500; }
-.btn {
+.over .btn {
   margin-top: calc(var(--c) * 0.15);
   padding: 0.55em 1.2em;
-  border: 2px solid var(--pencil);
-  border-radius: 14px 5px 12px 6px / 6px 12px 5px 14px;
-  background: var(--pencil);
-  color: var(--sheet);
-  font: 600 clamp(0.9rem, calc(var(--c) * 0.44), 1.15rem) / 1.2 var(--font-display);
-  cursor: pointer;
-  touch-action: manipulation;
+  font-size: clamp(0.9rem, calc(var(--c) * 0.44), 1.15rem);
+}
+.over .textbtn {
+  padding: 0.3em 0;
+  color: var(--pencil);
+  border-color: var(--pencil);
+  font-size: clamp(0.75rem, calc(var(--c) * 0.36), 1rem);
 }
 
-/* ---------- boxes drawn by hand: hold, block in hand, next ---------- */
+/* boxes drawn by hand: hold, block in hand, next */
 .slot {
   display: grid;
   place-items: center;
@@ -280,7 +409,6 @@ h1 {
   gap: calc(var(--c) * 0.25);
   min-width: 0;
 }
-.label { margin: 0; }
 .side .label {
   font-size: clamp(0.72rem, calc(var(--c) * 0.4), 1.15rem);
   text-align: center;
@@ -297,24 +425,20 @@ h1 {
   border-color: var(--pencil-soft);
 }
 .hold .piece { --u: calc(var(--c) * 1.45 * var(--s)); }
-.restart {
+.side .textbtn {
   margin-top: auto;
-  padding: 0.5em 0;
-  border: 0;
-  border-bottom: 1.5px solid var(--pencil-soft);
-  background: none;
-  color: var(--pencil-soft);
-  font: 500 clamp(10px, calc(var(--c) * 0.34), 14px) / 1.2 var(--font-body);
-  white-space: nowrap;
-  cursor: pointer;
-  touch-action: manipulation;
+  font-size: clamp(10px, calc(var(--c) * 0.34), 14px);
 }
-.restart.armed { color: var(--red); border-color: var(--red); }
 
 .tray {
   display: flex;
   align-items: flex-end;
-  gap: calc(var(--c) * 0.4);
+  gap: calc(var(--c) * 0.5);
+}
+.hand {
+  display: flex;
+  align-items: flex-end;
+  gap: calc(var(--c) * 0.25);
 }
 .cur {
   position: relative;
@@ -326,15 +450,39 @@ h1 {
 .cur .piece { --u: calc(var(--c) * 2.2 * var(--s)); }
 .cur.lifted .piece { opacity: 0.22; }
 .cur.stuck { border-color: var(--red); border-style: dashed; }
-.cur.stuck::after {
-  content: "置けない";
+.cur[data-note]::after {
+  content: attr(data-note);
   position: absolute;
   top: 5%;
   right: 7%;
-  color: var(--red);
+  color: var(--pencil-soft);
   font: 600 clamp(9px, calc(var(--c) * 0.3), 13px) / 1 var(--font-display);
 }
+.cur.stuck::after { color: var(--red); }
 .stuck .piece { opacity: 0.45; }
+.rot {
+  width: calc(var(--c) * 1.3);
+  height: calc(var(--c) * 1.5);
+  flex: none;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: calc(var(--c) * 0.06);
+  padding: 0;
+  border: 1.5px solid var(--pencil);
+  border-radius: 15px 225px 15px 255px / 255px 15px 225px 15px;
+  background: transparent;
+  color: var(--pencil);
+  font: 600 clamp(9px, calc(var(--c) * 0.3), 13px) / 1 var(--font-display);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.rot svg {
+  width: calc(var(--c) * 0.62);
+  height: calc(var(--c) * 0.62);
+  transition: transform 0.12s;
+}
+.rot:active svg { transform: rotate(90deg); }
 .next {
   display: flex;
   flex-direction: column;
@@ -362,6 +510,7 @@ h1 {
 .piece i { margin: 7%; }
 .piece.flow { animation: flow 0.26s ease-out; }
 .piece.swap { animation: stamp 0.2s ease-out; }
+.piece.spin { animation: spin 0.16s ease-out; }
 .piece.float {
   position: fixed;
   left: 0;
@@ -372,35 +521,32 @@ h1 {
   will-change: transform;
 }
 
-.hint {
-  margin: 0;
-  font-size: 0.78rem;
-  line-height: 1.5;
-  color: var(--pencil-soft);
-}
-
 @media (hover: hover) {
   .btn:hover { background: color-mix(in srgb, var(--pencil) 86%, var(--sheet)); }
-  .hold:hover { background: color-mix(in srgb, var(--pencil) 7%, transparent); }
-  .restart:hover:not(.armed) { color: var(--pencil); border-color: var(--pencil); }
+  .btn.plain:hover, .hold:hover, .rot:hover, .chip input:not(:checked) + label:hover {
+    background: color-mix(in srgb, var(--pencil) 7%, transparent);
+  }
+  .textbtn:hover { color: var(--pencil); border-color: var(--pencil); }
+}
+@media (hover: hover) and (pointer: fine) {
+  .howto .keys { display: list-item; }
 }
 
 /* a short, wide screen (a phone on its side): the tray moves beside the board */
 @container (max-height: 560px) and (min-aspect-ratio: 5 / 4) {
   .game {
-    --c: clamp(22px, min(calc((100cqh - 4px) / 9.2), calc((100cqw - 4px) / 17.1)), 64px);
+    --c: clamp(22px, min(calc((100cqh - 4px) / 8.3), calc((100cqw - 4px) / 17.1)), 64px);
     width: calc(var(--c) * 17.1 + 4px);
     display: grid;
     grid-template-columns: calc(var(--c) * 6.5) auto;
-    grid-template-rows: auto 1fr auto;
-    grid-template-areas: "top stage" "tray stage" "hint stage";
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "top stage" "tray stage";
     column-gap: calc(var(--c) * 0.5);
     align-content: center;
   }
   .top { grid-area: top; flex-wrap: wrap; row-gap: 6px; }
   .stage { grid-area: stage; align-self: center; }
   .tray { grid-area: tray; flex-direction: column; align-items: flex-start; justify-content: center; }
-  .hint { grid-area: hint; font-size: 0.72rem; line-height: 1.45; }
 }
 
 @keyframes stamp {
@@ -413,6 +559,9 @@ h1 {
 }
 @keyframes flow {
   from { transform: translateX(calc(var(--c) * 0.8)); opacity: 0.2; }
+}
+@keyframes spin {
+  from { transform: rotate(-90deg); }
 }
 @keyframes rise {
   from { transform: translateY(12%) scale(0.9); }
@@ -433,43 +582,92 @@ h1 {
 </head>
 <body>
 <div class="app">
-  <main class="game">
+  <section class="menu" id="menu">
+    <header class="menu-head">
+      <h1 class="title">方眼ブロック</h1>
+      <p class="lead">ブロックを置いて、たて・よこの列をそろえて消すパズル</p>
+    </header>
+
+    <div class="setup">
+      <div class="sheet preview" id="preview" aria-hidden="true"></div>
+      <fieldset class="sizes">
+        <legend class="label">マス目の大きさ</legend>
+        <div class="chips">
+          <span class="chip"><input type="radio" name="size" id="size6" value="6"><label for="size6">6</label></span>
+          <span class="chip"><input type="radio" name="size" id="size7" value="7"><label for="size7">7</label></span>
+          <span class="chip"><input type="radio" name="size" id="size8" value="8" checked><label for="size8">8</label></span>
+          <span class="chip"><input type="radio" name="size" id="size9" value="9"><label for="size9">9</label></span>
+          <span class="chip"><input type="radio" name="size" id="size10" value="10"><label for="size10">10</label></span>
+          <span class="chip"><input type="radio" name="size" id="size11" value="11"><label for="size11">11</label></span>
+          <span class="chip"><input type="radio" name="size" id="size12" value="12"><label for="size12">12</label></span>
+        </div>
+        <p class="size-note" id="sizeNote">8 × 8 マス・ベスト 0</p>
+      </fieldset>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="btn" id="resume" hidden>つづきから</button>
+      <button type="button" class="btn" id="startNew">はじめる</button>
+    </div>
+
+    <section class="howto">
+      <h2 class="label">あそびかた</h2>
+      <ul>
+        <li>ブロックをマス目へドラッグするか、マスをタップして置く。</li>
+        <li>たて・よこのどちらかが端から端までそろうと、その列が消える。</li>
+        <li>置く前に「回転」ボタンで向きを変えられる。ブロックの枠をタップしても回る。</li>
+        <li>HOLD は2つ。空の枠をタップで預ける。入っている枠をタップで入れ替える。</li>
+        <li>手持ちのブロックを、回してもどこにも置けなくなったらゲームオーバー。</li>
+        <li class="keys">キーボード：矢印キーで場所、Enter で置く、R で回転、1・2 で HOLD。右クリックでも回転。</li>
+      </ul>
+    </section>
+  </section>
+
+  <main class="game" id="game" hidden>
     <header class="top">
       <h1>方眼ブロック</h1>
       <dl class="scores">
-        <div><dt>SCORE</dt><dd id="score">0</dd></div>
-        <div><dt>BEST</dt><dd id="best">0</dd></div>
+        <div><dt class="label">SCORE</dt><dd id="score">0</dd></div>
+        <div><dt class="label">BEST</dt><dd id="best">0</dd></div>
       </dl>
     </header>
 
     <div class="stage">
-      <div class="board" id="board" tabindex="0" role="application"
-           aria-label="8かける8のマス目。矢印キーで置く場所を選び、Enterで置く">
+      <div class="sheet board" id="board" tabindex="0" role="application"
+           aria-label="マス目。矢印キーで置く場所を選び、Enterで置く。Rで回転">
         <div class="toast" id="toast" aria-live="polite"></div>
         <div class="over" id="over" hidden>
           <p class="over-title">GAME OVER</p>
           <p class="over-score">スコア <span id="overScore">0</span></p>
           <p class="over-note" id="overNote"></p>
           <button type="button" class="btn" id="again">もう一度あそぶ</button>
+          <button type="button" class="textbtn" id="overMenu">メニューへ</button>
         </div>
       </div>
       <aside class="side">
         <h2 class="label">HOLD</h2>
         <button type="button" class="slot hold" id="hold0" aria-label="ホールド1"></button>
         <button type="button" class="slot hold" id="hold1" aria-label="ホールド2"></button>
-        <button type="button" class="restart" id="restart">最初から</button>
+        <button type="button" class="textbtn" id="toMenu">メニュー</button>
       </aside>
     </div>
 
     <div class="tray">
-      <div class="slot cur" id="cur" aria-label="いま置くブロック"></div>
+      <div class="hand">
+        <div class="slot cur" id="cur" aria-label="いま置くブロック"></div>
+        <button type="button" class="rot" id="rotate" aria-label="ブロックを右に回転">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="21 4 21 10 15 10"></polyline>
+            <path d="M19.5 15a8 8 0 1 1-1.9-8.3L21 10"></path>
+          </svg>
+          <span>回転</span>
+        </button>
+      </div>
       <div class="next">
         <h2 class="label">NEXT</h2>
         <div class="queue" id="queue"></div>
       </div>
     </div>
-
-    <p class="hint">ブロックをマス目へドラッグ、またはマスをタップして置く。たて・よこ1列がそろうと消える。HOLD をタップすると預ける／入れ替える。</p>
   </main>
 </div>
 
@@ -477,19 +675,20 @@ h1 {
 (() => {
 'use strict';
 
-const N = 8;            // board is N x N
+const SIZES = [6, 7, 8, 9, 10, 11, 12];   // board sides offered in the menu
+const DEFAULT_SIZE = 8;
 const NEXT = 3;         // how many upcoming blocks are shown
 const HOLDS = 2;        // hold slots
-const SAVE_KEY = 'hogan-block:game:v1';
-const BEST_KEY = 'hogan-block:best';
+const SAVE_KEY = 'hogan-block:game:v2';
+const SIZE_KEY = 'hogan-block:size';
+const bestKey = n => `hogan-block:best:v2:${n}`;   // one best score per board size
 
 /* ---------- blocks ---------- */
+// Every block has at least three squares; one- and two-square blocks made it too easy.
 // color = index of the --bN token, w = how often the shape comes up
 const BASE = [
-  { rows: ['#'],                 color: 1, w: 5 },
   { rows: ['##', '##'],          color: 1, w: 7 },
   { rows: ['###', '###', '###'], color: 1, w: 3 },
-  { rows: ['##'],                color: 2, w: 6 },
   { rows: ['###'],               color: 2, w: 7 },
   { rows: ['####'],              color: 2, w: 5 },
   { rows: ['#####'],             color: 2, w: 3 },
@@ -508,12 +707,13 @@ function normalize(cells) {
   const minC = Math.min(...cells.map(p => p[1]));
   return cells.map(([r, c]) => [r - minR, c - minC]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 }
-function rotate(cells) {
+function turn(cells) {   // a quarter turn clockwise
   const h = Math.max(...cells.map(p => p[0])) + 1;
   return normalize(cells.map(([r, c]) => [c, h - 1 - r]));
 }
 
-// every distinct rotation of every base shape; blocks never rotate in play
+// Every distinct orientation of every shape. A block in play is an index into this
+// list, and `rot` is the index of the same block after a quarter turn clockwise.
 const PIECES = [];
 for (const base of BASE) {
   let cells = [];
@@ -524,17 +724,19 @@ for (const base of BASE) {
   for (let i = 0; i < 4; i++) {
     const key = cells.join(';');
     if (!seen.has(key)) { seen.add(key); variants.push(cells); }
-    cells = rotate(cells);
+    cells = turn(cells);
   }
-  for (const v of variants) {
+  const first = PIECES.length;
+  variants.forEach((v, i) => {
     PIECES.push({
       cells: v,
       w: Math.max(...v.map(p => p[1])) + 1,
       h: Math.max(...v.map(p => p[0])) + 1,
       color: base.color,
       weight: base.w / variants.length,
+      rot: first + (i + 1) % variants.length,
     });
-  }
+  });
 }
 const TOTAL_WEIGHT = PIECES.reduce((sum, p) => sum + p.weight, 0);
 
@@ -548,17 +750,27 @@ function randomPiece() {
 }
 
 /* ---------- rules ---------- */
+let N = DEFAULT_SIZE;   // side of the board in play
+
 function fits(board, p, r0, c0) {
   if (r0 < 0 || c0 < 0 || r0 + p.h > N || c0 + p.w > N) return false;
   return p.cells.every(([r, c]) => !board[(r0 + r) * N + c0 + c]);
 }
-function fitsAnywhere(board, pi) {
+function fitsSomewhere(board, pi) {   // as it is turned now
   const p = PIECES[pi];
   for (let r = 0; r + p.h <= N; r++) {
     for (let c = 0; c + p.w <= N; c++) {
       if (fits(board, p, r, c)) return true;
     }
   }
+  return false;
+}
+function fitsTurned(board, pi) {      // in any of its orientations
+  let i = pi;
+  do {
+    if (fitsSomewhere(board, i)) return true;
+    i = PIECES[i].rot;
+  } while (i !== pi);
   return false;
 }
 function fullLines(board) {
@@ -574,20 +786,24 @@ function fullLines(board) {
   }
   return { rows, cols };
 }
-// Over when nothing in hand can go anywhere: the current block does not fit,
-// there is no empty hold slot to put it aside, and no held block fits either.
+// Over when nothing in hand can go anywhere however it is turned: the current block
+// does not fit, there is no empty hold slot to put it aside, and no held block fits.
 function isOver(s) {
-  if (fitsAnywhere(s.board, s.cur)) return false;
-  return s.holds.every(h => h !== null && !fitsAnywhere(s.board, h));
+  if (fitsTurned(s.board, s.cur)) return false;
+  return s.holds.every(h => h !== null && !fitsTurned(s.board, h));
 }
 
 /* ---------- state ---------- */
-let state = null;
-let best = 0;
+let state = null;       // the game in play, or null before the first one
+let view = 'menu';      // 'menu' or 'game'
+let menuSize = DEFAULT_SIZE;
 
-function freshState() {
+const playing = () => view === 'game' && !!state && !state.over;
+
+function freshState(size) {
   return {
-    board: new Array(N * N).fill(0),
+    size,
+    board: new Array(size * size).fill(0),
     cur: randomPiece(),
     queue: Array.from({ length: NEXT }, randomPiece),
     holds: new Array(HOLDS).fill(null),
@@ -600,7 +816,8 @@ function freshState() {
 function validState(s) {
   const isPiece = v => Number.isInteger(v) && v >= 0 && v < PIECES.length;
   return !!s && typeof s === 'object'
-    && Array.isArray(s.board) && s.board.length === N * N
+    && SIZES.includes(s.size)
+    && Array.isArray(s.board) && s.board.length === s.size * s.size
     && s.board.every(v => Number.isInteger(v) && v >= 0 && v <= 8)
     && isPiece(s.cur)
     && Array.isArray(s.queue) && s.queue.length === NEXT && s.queue.every(isPiece)
@@ -608,39 +825,63 @@ function validState(s) {
     && Number.isFinite(s.score) && s.score >= 0
     && Number.isInteger(s.combo) && s.combo >= 0;
 }
-function snapshot() {
-  return JSON.parse(JSON.stringify(state));
-}
 function save() {
   try { localStorage.setItem(SAVE_KEY, JSON.stringify(state)); } catch (e) { /* storage is optional */ }
 }
 function loadSaved() {
   try { return JSON.parse(localStorage.getItem(SAVE_KEY)); } catch (e) { return null; }
 }
-function loadBest() {
-  try { return Math.max(0, Number(localStorage.getItem(BEST_KEY)) || 0); } catch (e) { return 0; }
+const bests = new Map();
+function bestOf(n) {
+  if (!bests.has(n)) {
+    let v = 0;
+    try { v = Math.max(0, Number(localStorage.getItem(bestKey(n))) || 0); } catch (e) { /* storage is optional */ }
+    bests.set(n, v);
+  }
+  return bests.get(n);
 }
-function saveBest() {
-  try { localStorage.setItem(BEST_KEY, String(best)); } catch (e) { /* storage is optional */ }
+function setBest(n, v) {
+  bests.set(n, v);
+  try { localStorage.setItem(bestKey(n), String(v)); } catch (e) { /* storage is optional */ }
 }
 
 /* ---------- elements ---------- */
 const $ = id => document.getElementById(id);
+const menuEl = $('menu');
+const gameEl = $('game');
+const previewEl = $('preview');
+const sizeInputs = [...document.querySelectorAll('input[name="size"]')];
+const resumeEl = $('resume');
+const startEl = $('startNew');
 const boardEl = $('board');
 const toastEl = $('toast');
 const overEl = $('over');
 const curEl = $('cur');
 const queueEl = $('queue');
 const holdEls = [$('hold0'), $('hold1')];
-const restartEl = $('restart');
 
-const cells = [];
-for (let i = 0; i < N * N; i++) {
-  const el = document.createElement('div');
-  el.className = 'cell';
-  boardEl.insertBefore(el, toastEl);
-  cells.push(el);
+// fill a sheet with n x n squares, replacing the ones it had
+function buildGrid(sheet, n, before) {
+  sheet.querySelectorAll(':scope > .cell').forEach(el => el.remove());
+  sheet.style.setProperty('--n', n);
+  const list = [];
+  for (let i = 0; i < n * n; i++) {
+    const el = document.createElement('div');
+    el.className = 'cell' + (i % n === n - 1 ? ' lc' : '') + (i >= n * (n - 1) ? ' lr' : '');
+    sheet.insertBefore(el, before || null);
+    list.push(el);
+  }
+  return list;
 }
+
+let cells = [];
+function setSize(n) {
+  N = n;
+  ghost = null;
+  ghostCells = [];
+  cells = buildGrid(boardEl, n, toastEl);
+}
+
 const nextEls = [];
 for (let i = 0; i < NEXT; i++) {
   const el = document.createElement('div');
@@ -665,7 +906,47 @@ function makePiece(pi, anim) {
   return el;
 }
 
-/* ---------- rendering ---------- */
+/* ---------- menu ---------- */
+// a few blocks on the preview sheet, tucked into its corners
+function sampleBlocks(n) {
+  return [
+    [0, n - 2, 8], [1, n - 3, 8], [1, n - 2, 8], [1, n - 1, 8], [2, n - 2, 8],
+    [n - 3, 0, 4], [n - 2, 0, 4], [n - 1, 0, 4], [n - 1, 1, 4],
+    [n - 2, 2, 1], [n - 2, 3, 1], [n - 1, 2, 1], [n - 1, 3, 1],
+    [n - 3, n - 1, 2], [n - 2, n - 1, 2], [n - 1, n - 1, 2],
+  ];
+}
+function renderMenu() {
+  for (const input of sizeInputs) input.checked = Number(input.value) === menuSize;
+  const squares = buildGrid(previewEl, menuSize);
+  for (const [r, c, color] of sampleBlocks(menuSize)) {
+    const el = squares[r * menuSize + c];
+    el.classList.add('f');
+    el.style.setProperty('--k', `var(--b${color})`);
+  }
+  $('sizeNote').textContent = `${menuSize} × ${menuSize} マス・ベスト ${bestOf(menuSize)}`;
+  const canResume = !!state && !state.over;
+  resumeEl.hidden = !canResume;
+  if (canResume) resumeEl.textContent = `つづきから（${state.size}×${state.size}・${state.score}点）`;
+  startEl.textContent = canResume ? '新しくはじめる' : 'はじめる';
+  startEl.classList.toggle('plain', canResume);
+}
+function showMenu() {
+  cancelDrag();
+  hoverPt = null;
+  view = 'menu';
+  gameEl.hidden = true;
+  menuEl.hidden = false;
+  renderMenu();
+}
+function showGame() {
+  view = 'game';
+  menuEl.hidden = true;
+  gameEl.hidden = false;
+  renderAll('');
+}
+
+/* ---------- rendering the game ---------- */
 function renderBoard() {
   for (let i = 0; i < N * N; i++) {
     const v = state.board[i];
@@ -673,11 +954,17 @@ function renderBoard() {
     if (v) cells[i].style.setProperty('--k', `var(--b${v})`);
   }
 }
-// anim: 'flow' when the queue moved up, 'swap' when only the block in hand changed
+// anim: 'flow' when the queue moved up, 'swap' or 'spin' when only the block in hand changed
 function renderTray(anim) {
   curEl.replaceChildren(makePiece(state.cur, anim));
-  curEl.classList.toggle('stuck', !state.over && !fitsAnywhere(state.board, state.cur));
-  if (anim !== 'swap') {
+  let note = '';
+  if (!state.over && !fitsSomewhere(state.board, state.cur)) {
+    note = fitsTurned(state.board, state.cur) ? '回すと置ける' : '置けない';
+  }
+  curEl.classList.toggle('stuck', note === '置けない');
+  if (note) curEl.dataset.note = note;
+  else delete curEl.dataset.note;
+  if (anim !== 'swap' && anim !== 'spin') {
     state.queue.forEach((pi, i) => nextEls[i].replaceChildren(makePiece(pi, anim)));
   }
 }
@@ -686,18 +973,18 @@ function renderHolds(changed) {
     const el = holdEls[i];
     if (pi === null) el.replaceChildren();
     else el.replaceChildren(makePiece(pi, i === changed ? 'swap' : ''));
-    el.classList.toggle('stuck', pi !== null && !fitsAnywhere(state.board, pi));
+    el.classList.toggle('stuck', pi !== null && !fitsTurned(state.board, pi));
     el.setAttribute('aria-label', `ホールド${i + 1}` + (pi === null ? '（空き）。押すと今のブロックを預ける' : '。押すと今のブロックと入れ替える'));
   });
 }
 function renderScore() {
   $('score').textContent = state.score;
-  $('best').textContent = best;
+  $('best').textContent = bestOf(N);
   overEl.hidden = !state.over;
   if (state.over) {
     $('overScore').textContent = state.score;
     const note = $('overNote');
-    note.textContent = state.record ? 'ベスト更新！' : `ベスト ${best}`;
+    note.textContent = state.record ? 'ベスト更新！' : `ベスト ${bestOf(N)}`;
     note.classList.toggle('record', !!state.record);
   }
 }
@@ -732,7 +1019,7 @@ function clampGhost(g) {
 function setGhost(g) {
   for (const el of ghostCells) el.classList.remove('g', 'bad', 'wc');
   ghostCells = [];
-  ghost = g && !state.over ? clampGhost(g) : null;
+  ghost = g && playing() ? clampGhost(g) : null;
   if (!ghost) return;
   const p = PIECES[state.cur];
   const ok = fits(state.board, p, ghost.r, ghost.c);
@@ -766,7 +1053,7 @@ function finishMove() {
 
 function place(r0, c0) {
   const p = PIECES[state.cur];
-  if (state.over || !fits(state.board, p, r0, c0)) return false;
+  if (!playing() || !fits(state.board, p, r0, c0)) return false;
 
   const placed = p.cells.map(([r, c]) => (r0 + r) * N + c0 + c);
   for (const i of placed) state.board[i] = p.color;
@@ -800,10 +1087,9 @@ function place(r0, c0) {
   }
 
   state.score += gained;
-  if (state.score > best) {
-    best = state.score;
+  if (state.score > bestOf(N)) {
+    setBest(N, state.score);
     state.record = true;
-    saveBest();
   }
   drawNext();
   finishMove();
@@ -811,8 +1097,9 @@ function place(r0, c0) {
   renderAll('flow');
   for (const i of placed) {
     if (cleared.has(i)) continue;
-    cells[i].classList.add('new');
-    setTimeout(() => cells[i].classList.remove('new'), 260);
+    const el = cells[i];
+    el.classList.add('new');
+    setTimeout(() => el.classList.remove('new'), 260);
   }
   for (const [i, [color, order]] of cleared) {
     const fx = document.createElement('span');
@@ -829,7 +1116,7 @@ function place(r0, c0) {
 // Empty slot: put the current block aside and take the next one.
 // Occupied slot: swap it with the current block.
 function hold(i) {
-  if (state.over) return;
+  if (!playing()) return;
   const held = state.holds[i];
   state.holds[i] = state.cur;
   if (held === null) drawNext();
@@ -841,21 +1128,45 @@ function hold(i) {
   if (ghost) setGhost(ghost);
 }
 
-function newGame() {
-  state = freshState();
-  setGhost(null);
-  toastEl.classList.remove('show');
+// the square of a block that stays put when it turns
+const pivot = p => [Math.floor((p.h - 1) / 2), Math.floor((p.w - 1) / 2)];
+
+// Turn the block in hand a quarter turn clockwise.
+function rotate() {
+  if (!playing()) return;
+  const before = PIECES[state.cur];
+  state.cur = before.rot;
+  const after = PIECES[state.cur];
   save();
-  renderAll('flow');
+  renderTray('spin');
+  if (drag && drag.active) {
+    if (drag.float) { drag.float.remove(); drag.float = null; }
+    moveDrag();
+  } else if (hoverPt) {
+    setGhost(cellFromPoint(hoverPt.x, hoverPt.y, 0));
+  } else if (ghost) {
+    const [ar, ac] = pivot(before);
+    const [br, bc] = pivot(after);
+    setGhost({ r: ghost.r + ar - br, c: ghost.c + ac - bc });
+  }
 }
 
-/* ---------- pointer: drag from the tray, or press a cell ---------- */
+function newGame(size) {
+  state = freshState(size);
+  setSize(size);
+  toastEl.classList.remove('show');
+  save();
+  if (view === 'game') renderAll('flow');
+}
+
+/* ---------- pointer: drag from the tray, or press a square ---------- */
 let drag = null;
+let hoverPt = null;   // where the mouse last was over the board
 
 function cellSize() {
   return boardEl.clientWidth / N;
 }
-// which top-left cell puts the block's middle nearest the point (lifted by `lift` px)
+// which top-left square puts the block's middle nearest the point (lifted by `lift` px)
 function cellFromPoint(x, y, lift) {
   const rect = boardEl.getBoundingClientRect();
   const size = cellSize();
@@ -865,63 +1176,86 @@ function cellFromPoint(x, y, lift) {
   const p = PIECES[state.cur];
   return { r: Math.round(py - p.h / 2), c: Math.round(px - p.w / 2) };
 }
+// a finger hides what is under it, so a block dragged by touch floats above the touch
+function liftOf(d) {
+  return d.fromTray && d.touch ? d.size * PIECES[state.cur].h / 2 + 34 : 0;
+}
 
 function startDrag(e, fromTray) {
-  if (state.over || drag || (e.pointerType === 'mouse' && e.button !== 0)) return;
-  if (e.target.closest('.over')) return;
+  if (!playing() || drag || e.target.closest('.over')) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) {
+    if (e.button === 2) rotate();   // right click turns the block
+    return;
+  }
   e.preventDefault();
-  const size = cellSize();
-  const p = PIECES[state.cur];
   drag = {
     id: e.pointerId,
     fromTray,
+    touch: e.pointerType !== 'mouse',
     x0: e.clientX,
     y0: e.clientY,
-    size,
-    // a finger hides what is under it, so a dragged block floats above the touch
-    lift: fromTray && e.pointerType !== 'mouse' ? size * p.h / 2 + 34 : 0,
+    x: e.clientX,
+    y: e.clientY,
+    size: cellSize(),
     active: !fromTray,   // a press on the tray becomes a drag once it has moved
     float: null,
   };
-  trackDrag(e);
+  moveDrag();
 }
-function trackDrag(e) {
+function moveDrag() {
+  const d = drag;
   const p = PIECES[state.cur];
-  if (!drag.active) {
-    if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 8) return;
-    drag.active = true;
-    drag.float = makePiece(state.cur, 'float');
-    drag.float.style.setProperty('--u', drag.size + 'px');
-    document.body.appendChild(drag.float);
+  if (!d.active) {
+    if (Math.hypot(d.x - d.x0, d.y - d.y0) < 8) return;
+    d.active = true;
     curEl.classList.add('lifted');
   }
-  if (drag.float) {
-    const x = e.clientX - p.w * drag.size / 2;
-    const y = e.clientY - drag.lift - p.h * drag.size / 2;
-    drag.float.style.transform = `translate(${x}px, ${y}px)`;
+  const lift = liftOf(d);
+  if (d.fromTray) {
+    if (!d.float) {
+      d.float = makePiece(state.cur, 'float');
+      d.float.style.setProperty('--u', d.size + 'px');
+      document.body.appendChild(d.float);
+    }
+    d.float.style.transform = `translate(${d.x - p.w * d.size / 2}px, ${d.y - lift - p.h * d.size / 2}px)`;
   }
-  setGhost(cellFromPoint(e.clientX, e.clientY, drag.lift));
+  setGhost(cellFromPoint(d.x, d.y, lift));
+}
+function cancelDrag() {
+  if (drag && drag.float) drag.float.remove();
+  drag = null;
+  curEl.classList.remove('lifted');
+  setGhost(null);
 }
 function endDrag(e, commit) {
   const d = drag;
   drag = null;
   if (d.float) d.float.remove();
   curEl.classList.remove('lifted');
-  const target = commit && d.active ? cellFromPoint(e.clientX, e.clientY, d.lift) : null;
+  if (commit && d.fromTray && !d.active) {
+    rotate();   // a tap on the block in hand turns it
+    return;
+  }
+  const target = commit && d.active ? cellFromPoint(e.clientX, e.clientY, liftOf(d)) : null;
   if (target) {
     const g = clampGhost(target);
     place(g.r, g.c);
   }
   // a mouse keeps hovering, so show where the next block would go; a finger has left
-  const hover = e.pointerType === 'mouse' ? cellFromPoint(e.clientX, e.clientY, 0) : null;
-  const overBoard = hover && document.elementFromPoint(e.clientX, e.clientY)?.closest('#board');
-  setGhost(overBoard ? hover : null);
+  const stillOver = e.pointerType === 'mouse'
+    && !!document.elementFromPoint(e.clientX, e.clientY)?.closest('#board');
+  hoverPt = stillOver ? { x: e.clientX, y: e.clientY } : null;
+  setGhost(hoverPt ? cellFromPoint(hoverPt.x, hoverPt.y, 0) : null);
 }
 
 curEl.addEventListener('pointerdown', e => startDrag(e, true));
 boardEl.addEventListener('pointerdown', e => startDrag(e, false));
+for (const el of [curEl, boardEl]) el.addEventListener('contextmenu', e => e.preventDefault());
 window.addEventListener('pointermove', e => {
-  if (drag && e.pointerId === drag.id) trackDrag(e);
+  if (!drag || e.pointerId !== drag.id) return;
+  drag.x = e.clientX;
+  drag.y = e.clientY;
+  moveDrag();
 });
 window.addEventListener('pointerup', e => {
   if (drag && e.pointerId === drag.id) endDrag(e, true);
@@ -930,37 +1264,39 @@ window.addEventListener('pointercancel', e => {
   if (drag && e.pointerId === drag.id) endDrag(e, false);
 });
 boardEl.addEventListener('pointermove', e => {
-  if (!drag && e.pointerType === 'mouse') setGhost(cellFromPoint(e.clientX, e.clientY, 0));
+  if (drag || e.pointerType !== 'mouse' || !playing()) return;
+  hoverPt = { x: e.clientX, y: e.clientY };
+  setGhost(cellFromPoint(hoverPt.x, hoverPt.y, 0));
 });
 boardEl.addEventListener('pointerleave', e => {
-  if (!drag && e.pointerType === 'mouse') setGhost(null);
+  if (drag || e.pointerType !== 'mouse') return;
+  hoverPt = null;
+  setGhost(null);
 });
 
 /* ---------- buttons and keys ---------- */
 holdEls.forEach((el, i) => el.addEventListener('click', () => hold(i)));
-$('again').addEventListener('click', newGame);
+$('rotate').addEventListener('click', rotate);
+$('again').addEventListener('click', () => newGame(N));
+$('toMenu').addEventListener('click', showMenu);
+$('overMenu').addEventListener('click', showMenu);
 
-let armTimer = 0;
-function disarmRestart() {
-  clearTimeout(armTimer);
-  restartEl.classList.remove('armed');
-  restartEl.textContent = '最初から';
+for (const input of sizeInputs) {
+  input.addEventListener('change', () => {
+    menuSize = Number(input.value);
+    try { localStorage.setItem(SIZE_KEY, String(menuSize)); } catch (e) { /* storage is optional */ }
+    renderMenu();
+  });
 }
-restartEl.addEventListener('click', () => {
-  // a game in progress needs a second tap, so one slip does not throw it away
-  if (state.over || state.score === 0 || restartEl.classList.contains('armed')) {
-    disarmRestart();
-    newGame();
-    return;
-  }
-  restartEl.classList.add('armed');
-  restartEl.textContent = '本当に？';
-  armTimer = setTimeout(disarmRestart, 3000);
+resumeEl.addEventListener('click', showGame);
+startEl.addEventListener('click', () => {
+  newGame(menuSize);
+  showGame();
 });
 
 const ARROWS = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
 document.addEventListener('keydown', e => {
-  if (state.over || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!playing() || e.metaKey || e.ctrlKey || e.altKey) return;
   const onButton = e.target instanceof HTMLButtonElement;
   if (ARROWS[e.key]) {
     e.preventDefault();
@@ -969,6 +1305,7 @@ document.addEventListener('keydown', e => {
     boardEl.focus({ preventScroll: true });
     const p = PIECES[state.cur];
     const [dr, dc] = ARROWS[e.key];
+    hoverPt = null;
     setGhost(ghost
       ? { r: ghost.r + dr, c: ghost.c + dc }
       : { r: Math.floor((N - p.h) / 2), c: Math.floor((N - p.w) / 2) });
@@ -979,6 +1316,8 @@ document.addEventListener('keydown', e => {
       place(at.r, at.c);
       setGhost(at);
     }
+  } else if (e.key === 'r' || e.key === 'R') {
+    rotate();
   } else if (e.key === '1' || e.key === '2') {
     hold(Number(e.key) - 1);
   }
@@ -986,24 +1325,28 @@ document.addEventListener('keydown', e => {
 
 /* ---------- start ---------- */
 function start(data) {
-  best = loadBest();
   const carried = data && data.game;
   const saved = validState(carried) ? carried : loadSaved();
+  try { menuSize = Number(localStorage.getItem(SIZE_KEY)); } catch (e) { /* storage is optional */ }
+  if (!SIZES.includes(menuSize)) menuSize = DEFAULT_SIZE;
   if (validState(saved)) {
     state = saved;
+    setSize(state.size);
     state.over = isOver(state);
     state.record = !!state.record;
-    best = Math.max(best, state.score);
-    renderAll('');
-  } else {
-    newGame();
+    if (state.score > bestOf(N)) setBest(N, state.score);
+    if (!state.over) menuSize = state.size;
   }
+  if (state && data && data.view === 'game') showGame();
+  else showMenu();
 }
 
 // inside an artifact viewer, a republished page picks the game up where it was
 const hot = window.claude && window.claude.hot;
 try {
-  if (hot && hot.snapshot) hot.snapshot(() => ({ game: snapshot() }));
+  if (hot && hot.snapshot) {
+    hot.snapshot(() => ({ game: state ? JSON.parse(JSON.stringify(state)) : null, view }));
+  }
 } catch (e) { /* viewer hook is optional */ }
 if (hot && hot.ready) hot.ready(start);
 else start((hot && hot.data) || {});
