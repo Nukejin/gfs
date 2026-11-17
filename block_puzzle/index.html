@@ -19,15 +19,18 @@
   --pencil: #343a44;
   --pencil-soft: #76808e;
   --red: #d2433b;
-  /* marker colors, one per block family */
+  /* marker colors, one per block family; a block and its mirror image never share one */
   --b1: #f2c230; /* squares */
   --b2: #4f93e6; /* bars */
-  --b3: #5cba6c; /* small corner */
-  --b4: #f2913d; /* L and J */
-  --b5: #9277e0; /* big corner */
+  --b3: #5cba6c; /* corners, small and big */
+  --b4: #f2913d; /* L, short and long */
+  --b5: #9277e0; /* J, the mirror of L, short and long */
   --b6: #ea6fa8; /* T */
-  --b7: #33b3aa; /* S and Z */
+  --b7: #33b3aa; /* S */
   --b8: #ea5d57; /* cross */
+  --b9: #a4cf3e; /* Z, the mirror of S */
+  --b10: #c56fd8; /* P, a square with one more */
+  --b11: #b5835a; /* the mirror of P */
   --font-display: "Klee One", "Hiragino Maru Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
   --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", system-ui, sans-serif;
 }
@@ -47,6 +50,9 @@
     --b6: #ee97c2;
     --b7: #6fcfc7;
     --b8: #f28d87;
+    --b9: #c3df7a;
+    --b10: #d79be6;
+    --b11: #c09878;
     color-scheme: dark;
   }
 }
@@ -65,6 +71,9 @@
   --b6: #ee97c2;
   --b7: #6fcfc7;
   --b8: #f28d87;
+  --b9: #c3df7a;
+  --b10: #d79be6;
+  --b11: #c09878;
   color-scheme: dark;
 }
 
@@ -685,21 +694,29 @@ const bestKey = n => `hogan-block:best:v2:${n}`;   // one best score per board s
 
 /* ---------- blocks ---------- */
 // Every block has at least three squares; one- and two-square blocks made it too easy.
-// color = index of the --bN token, w = how often the shape comes up
+// color = index of the --bN token, w = how often the shape comes up.
+// Blocks turn but never flip, so a shape that differs from its mirror image is listed
+// with it as a pair, in two colors: L and J, S and Z, long L and long J, P and its mirror.
+// New shapes go at the end: a saved game keeps blocks by their place in this list.
+const COLORS = 11;
 const BASE = [
-  { rows: ['##', '##'],          color: 1, w: 7 },
-  { rows: ['###', '###', '###'], color: 1, w: 3 },
-  { rows: ['###'],               color: 2, w: 7 },
-  { rows: ['####'],              color: 2, w: 5 },
-  { rows: ['#####'],             color: 2, w: 3 },
-  { rows: ['#.', '##'],          color: 3, w: 8 },
-  { rows: ['#.', '#.', '##'],    color: 4, w: 5 },
-  { rows: ['.#', '.#', '##'],    color: 4, w: 5 },
-  { rows: ['#..', '#..', '###'], color: 5, w: 4 },
-  { rows: ['###', '.#.'],        color: 6, w: 6 },
-  { rows: ['.##', '##.'],        color: 7, w: 3 },
-  { rows: ['##.', '.##'],        color: 7, w: 3 },
-  { rows: ['.#.', '###', '.#.'], color: 8, w: 4 },
+  { rows: ['##', '##'],             color: 1,  w: 7 },
+  { rows: ['###', '###', '###'],    color: 1,  w: 3 },
+  { rows: ['###'],                  color: 2,  w: 7 },
+  { rows: ['####'],                 color: 2,  w: 5 },
+  { rows: ['#####'],                color: 2,  w: 3 },
+  { rows: ['#.', '##'],             color: 3,  w: 8 },
+  { rows: ['#.', '#.', '##'],       color: 4,  w: 5 },
+  { rows: ['.#', '.#', '##'],       color: 5,  w: 5 },
+  { rows: ['#..', '#..', '###'],    color: 3,  w: 4 },
+  { rows: ['###', '.#.'],           color: 6,  w: 6 },
+  { rows: ['.##', '##.'],           color: 7,  w: 3 },
+  { rows: ['##.', '.##'],           color: 9,  w: 3 },
+  { rows: ['.#.', '###', '.#.'],    color: 8,  w: 4 },
+  { rows: ['#.', '#.', '#.', '##'], color: 4,  w: 3 },
+  { rows: ['.#', '.#', '.#', '##'], color: 5,  w: 3 },
+  { rows: ['##', '##', '#.'],       color: 10, w: 3 },
+  { rows: ['##', '##', '.#'],       color: 11, w: 3 },
 ];
 
 function normalize(cells) {
@@ -818,7 +835,7 @@ function validState(s) {
   return !!s && typeof s === 'object'
     && SIZES.includes(s.size)
     && Array.isArray(s.board) && s.board.length === s.size * s.size
-    && s.board.every(v => Number.isInteger(v) && v >= 0 && v <= 8)
+    && s.board.every(v => Number.isInteger(v) && v >= 0 && v <= COLORS)
     && isPiece(s.cur)
     && Array.isArray(s.queue) && s.queue.length === NEXT && s.queue.every(isPiece)
     && Array.isArray(s.holds) && s.holds.length === HOLDS && s.holds.every(h => h === null || isPiece(h))
